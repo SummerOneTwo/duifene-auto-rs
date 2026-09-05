@@ -1,0 +1,4 @@
+# 仅对 Windows x86_64 构建启用 x86-64-v3 (AVX2) 代码生成;
+# 其他平台(含本地 Linux 开发)不受影响。
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))']
+rustflags = ["-C", "target-cpu=x86-64-v3"]

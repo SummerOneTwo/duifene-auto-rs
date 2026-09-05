@@ -4,11 +4,15 @@ use std::thread;
 use std::time::Duration as StdDuration;
 
 use rand::Rng;
-use reqwest::blocking::{Client as HttpClient, Response};
-use reqwest::header::HeaderMap;
+use ureq::http::HeaderMap;
+use ureq::tls::{TlsConfig, TlsProvider};
+use ureq::{Agent, Body};
 
 use crate::api::{ApiErr, CheckInResult, Client, SignReq};
 use crate::models::{Course, RawRow, SignActivity, SignType};
+
+type HttpClient = Agent;
+type Response = ureq::http::Response<Body>;
 
 const HOST: &str = "https://www.duifene.com";
 const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0";
@@ -27,20 +31,32 @@ fn parse_cookie_pair(text: &str) -> Option<(String, String)> {
 }
 
 #[derive(Clone)]
-struct CookieStore(Arc<Mutex<Vec<(String, String)>>>);
+struct CookieStore(Arc<Mutex<CookieInner>>);
+
+struct CookieInner {
+    entries: Vec<(String, String)>,
+    header: Option<String>,
+}
 
 impl CookieStore {
     fn new() -> Self {
-        CookieStore(Arc::new(Mutex::new(Vec::new())))
+        CookieStore(Arc::new(Mutex::new(CookieInner {
+            entries: Vec::new(),
+            header: None,
+        })))
     }
 
     fn insert_pair(&self, name: String, value: String) {
-        let mut entries = self.0.lock().unwrap();
-        if let Some(existing) = entries.iter_mut().find(|(key, _)| *key == name) {
+        let mut inner = self.0.lock().unwrap();
+        if let Some(existing) = inner.entries.iter_mut().find(|(key, _)| *key == name) {
+            if existing.1 == value {
+                return;
+            }
             existing.1 = value;
         } else {
-            entries.push((name, value));
+            inner.entries.push((name, value));
         }
+        inner.header = None;
     }
 
     fn seed(&self, cookie_string: &str) {
@@ -52,11 +68,13 @@ impl CookieStore {
     }
 
     fn clear(&self) {
-        self.0.lock().unwrap().clear();
+        let mut inner = self.0.lock().unwrap();
+        inner.entries.clear();
+        inner.header = None;
     }
 
     fn apply_response(&self, headers: &HeaderMap) {
-        for value in headers.get_all(reqwest::header::SET_COOKIE) {
+        for value in headers.get_all("set-cookie") {
             if let Ok(text) = value.to_str()
                 && let Some((name, value)) = parse_cookie_pair(text)
             {
@@ -66,17 +84,20 @@ impl CookieStore {
     }
 
     fn header_value(&self) -> Option<String> {
-        let entries = self.0.lock().unwrap();
-        if entries.is_empty() {
+        let mut inner = self.0.lock().unwrap();
+        if inner.entries.is_empty() {
             return None;
         }
-        Some(
-            entries
+        if inner.header.is_none() {
+            let text = inner
+                .entries
                 .iter()
                 .map(|(name, value)| format!("{name}={value}"))
                 .collect::<Vec<String>>()
-                .join("; "),
-        )
+                .join("; ");
+            inner.header = Some(text);
+        }
+        Some(inner.header.clone().unwrap_or_default())
     }
 
     fn snapshot(&self) -> String {
@@ -84,11 +105,12 @@ impl CookieStore {
     }
 
     fn summary(&self) -> String {
-        let entries = self.0.lock().unwrap();
-        if entries.is_empty() {
+        let inner = self.0.lock().unwrap();
+        if inner.entries.is_empty() {
             return "无".to_string();
         }
-        entries
+        inner
+            .entries
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<&str>>()
@@ -110,41 +132,45 @@ fn execute_request(
     let mut retried = false;
     loop {
         let is_first_hop = redirects == 0;
-        let mut builder = if is_first_hop && data.is_some() {
-            http.post(&target_url)
-        } else {
-            http.get(&target_url)
-        };
+        let mut headers: Vec<(&str, String)> = Vec::new();
         if let Some(cookie_value) = cookies.header_value() {
-            builder = builder.header(reqwest::header::COOKIE, cookie_value);
+            headers.push(("Cookie", cookie_value));
         }
         if mobile_ua {
-            builder = builder.header(reqwest::header::USER_AGENT, MOBILE_UA);
+            headers.push(("User-Agent", MOBILE_UA.to_string()));
         }
         if let Some(referer_value) = referer {
-            builder = builder.header("Referer", referer_value);
+            headers.push(("Referer", referer_value.to_string()));
         }
         for (name, value) in extra_headers {
-            builder = builder.header(*name, *value);
+            headers.push((name, (*value).to_string()));
         }
-        if is_first_hop && let Some(body) = data {
-            builder = builder
-                .header(reqwest::header::CONTENT_TYPE, FORM_CONTENT_TYPE)
-                .body(body.to_string());
+        let response = if is_first_hop && let Some(body) = data {
+            let mut builder = http.post(&target_url);
+            for (name, value) in &headers {
+                builder = builder.header(*name, value.as_str());
+            }
+            builder
+                .header("Content-Type", FORM_CONTENT_TYPE)
+                .send(body.to_string())
+        } else {
+            let mut builder = http.get(&target_url);
+            for (name, value) in &headers {
+                builder = builder.header(*name, value.as_str());
+            }
+            builder.call()
         }
-        let response = builder
-            .send()
-            .map_err(|error| ApiErr::Network(error.to_string()))?;
+        .map_err(|error| ApiErr::Network(error.to_string()))?;
         cookies.apply_response(response.headers());
         let status = response.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS && !retried {
+        if status.as_u16() == 429 && !retried {
             retried = true;
             thread::sleep(StdDuration::from_millis(500));
             continue;
         }
         if let Some(location) = response
             .headers()
-            .get(reqwest::header::LOCATION)
+            .get("location")
             .and_then(|value| value.to_str().ok())
         {
             redirects += 1;
@@ -167,15 +193,18 @@ fn execute_request(
     }
 }
 
-fn parse_json(response: Response) -> Result<serde_json::Value, ApiErr> {
-    response
-        .json::<serde_json::Value>()
-        .map_err(|error| ApiErr::Parse(error.to_string()))
+fn parse_json(mut response: Response) -> Result<serde_json::Value, ApiErr> {
+    let text = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|error| ApiErr::Parse(error.to_string()))?;
+    serde_json::from_str(&text).map_err(|error| ApiErr::Parse(error.to_string()))
 }
 
-fn parse_text(response: Response) -> Result<String, ApiErr> {
+fn parse_text(mut response: Response) -> Result<String, ApiErr> {
     response
-        .text()
+        .body_mut()
+        .read_to_string()
         .map_err(|error| ApiErr::Network(error.to_string()))
 }
 
@@ -550,15 +579,20 @@ pub struct LiveClient {
 
 impl LiveClient {
     pub fn new() -> Self {
-        let http = HttpClient::builder()
-            .danger_accept_invalid_certs(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .http1_only()
-            .gzip(true)
-            .timeout(StdDuration::from_secs(10))
+        let tls = TlsConfig::builder()
+            .provider(TlsProvider::NativeTls)
+            .disable_verification(true)
+            .build();
+        let http = Agent::config_builder()
+            .tls_config(tls)
+            .max_redirects(0)
+            .http_status_as_error(false)
+            .timeout_global(Some(StdDuration::from_secs(10)))
+            .timeout_connect(Some(StdDuration::from_secs(5)))
+            .max_idle_connections_per_host(16)
             .user_agent(DESKTOP_UA)
             .build()
-            .expect("Http client should build");
+            .new_agent();
         LiveClient {
             http,
             cookies: CookieStore::new(),

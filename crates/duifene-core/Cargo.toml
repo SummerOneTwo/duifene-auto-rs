@@ -10,4 +10,4 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
-reqwest = { workspace = true }
+ureq = { workspace = true }

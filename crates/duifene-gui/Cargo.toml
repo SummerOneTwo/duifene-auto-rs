@@ -5,8 +5,9 @@ edition.workspace = true
 
 [dependencies]
 duifene-core = { path = "../duifene-core" }
-gpui-kit = "0.6"
+slint = { workspace = true }
 chrono = { workspace = true }
+arboard = { version = "3", default-features = false }
 
-[dev-dependencies]
-gpui-kit = { version = "0.6", features = ["test-support"] }
+[build-dependencies]
+slint-build = "1"
