@@ -76,44 +76,11 @@ fn embed_windows_icon() {
         bytes.len(),
         ids
     );
-    // 用静态库方式链接资源: 把 .res 打包成 resource.lib,
-    // 再用 rustc-link-search + rustc-link-lib=static=resource。
-    // 这借鉴 tauri-build 的成熟做法(它也是生成 .lib 后 static link),
-    // 与「把 .res 直接当 link-arg 传给 rustc」不同, 后者在这套环境下
-    // 不会真正把资源送进 exe(无论 LTO 开关)。
-    let lib_path = std::path::Path::new(&out_dir).join("resource.lib");
-    // 微软 lib.exe(随 VS 提供,稳定)优先; llvm-lib 产出的 lib 曾触发
-    // link.exe LNK1106(cannot seek),可能是它的 archive 格式问题。
-    let lib_cmd = ["lib.exe", "llvm-lib"];
-    let mut built = false;
-    for tool in lib_cmd {
-        let o = Command::new(tool)
-            .arg(("/OUT:").to_string() + &lib_path.display().to_string())
-            .arg(&res_path)
-            .output();
-        if let Ok(o) = o {
-            if o.status.success() {
-                println!(
-                    "cargo:warning=lib tool={} produced resource.lib",
-                    tool
-                );
-                built = true;
-                break;
-            }
-        }
-    }
-    if !built {
-        // 回退: 直接指定 .res 为链接对象(某些链接器支持)
-        println!(
-            "cargo:warning=no lib.exe/llvm-lib; falling back to link-arg .res"
-        );
-        println!("cargo:rustc-link-arg-bins={}", res_path.display());
-    } else {
-        // 用 whole-archive 强制把整个 resource.lib 链入。否则静态库里的
-        // 资源对象因无被引用符号而会被链接器丢弃,导致 exe 没有 .rsrc 段。
-        println!("cargo:rustc-link-search=native={}", out_dir);
-        println!("cargo:rustc-link-lib=static:+whole-archive=resource");
-    }
+    // 直接让 MSVC link.exe 链接 .res 作为资源输入。
+    // link.exe 原生接受 .res 文件(等同 object), 无需再打包成 .lib。
+    // 之前打包 resource.lib 时 llvm-lib 产出的归档损坏(LNK1106 cannot seek),
+    // 而 lib.exe 又不在 runner 的 PATH; 直接喂 .res 给链接器最稳。
+    println!("cargo:rustc-link-arg-bins={}", res_path.display());
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=app.rc");
 }
