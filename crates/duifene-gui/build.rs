@@ -32,46 +32,44 @@ fn embed_windows_icon() {
     let rc = std::env::var("RC_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("llvm-rc"));
-    let mut cmd = Command::new(&rc);
-    cmd.arg(format!("/fo{}", res_path.display()))
-        .arg(format!("/I{}", manifest_dir))
-        .arg(rc_path.display().to_string());
-    let status = cmd.output();
-    if status.is_err() {
-        // llvm-rc 可能不存在,回退到 SDK 的 rc.exe
-        let rc2 = std::env::var("RC_PATH")
-            .or_else(|_| std::env::var("RC_PATH_FALLBACK"))
+    // 在 Windows 上,llvm-rc 可能在 PATH;若无则回退 rc.exe。
+    // 注意: Windows job 走系统 rc.exe,它生成的 .res 是 MSVC COFF 格式。
+    let mut compile = |compiler: &Path, res: &Path| -> bool {
+        let out = Command::new(compiler)
+            .arg(format!("/fo{}", res.display()))
+            .arg(format!("/I{}", manifest_dir))
+            .arg(rc_path.display().to_string())
+            .output();
+        match out {
+            Ok(o) => {
+                println!(
+                    "resource compiler {} rc_out={} rc_err={}",
+                    compiler.display(),
+                    String::from_utf8_lossy(&o.stdout).trim(),
+                    String::from_utf8_lossy(&o.stderr).trim(),
+                );
+                o.status.success()
+            }
+            Err(_) => false,
+        }
+    };
+    let mut ok = compile(&rc, &res_path);
+    if !ok {
+        let rc2 = std::env::var("RC_PATH_FALLBACK")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("rc.exe"));
-        let mut cmd2 = Command::new(&rc2);
-        cmd2.arg(format!("/fo{}", res_path.display()))
-            .arg(format!("/I{}", manifest_dir))
-            .arg(rc_path.display().to_string());
-        let status2 = cmd2.output().unwrap_or_else(|e| {
-            panic!("no resource compiler found (tried {} and {}): {e}", rc.display(), rc2.display())
-        });
-        if !status2.status.success() {
-            panic!(
-                "resource compiler ({}) failed:\nstdout={}\nstderr={}\n",
-                rc2.display(),
-                String::from_utf8_lossy(&status2.stdout),
-                String::from_utf8_lossy(&status2.stderr),
-            );
-        }
-    } else {
-        let status = status.unwrap();
-        if !status.status.success() {
-            panic!(
-                "resource compiler ({}) failed:\nstdout={}\nstderr={}\n",
-                rc.display(),
-                String::from_utf8_lossy(&status.stdout),
-                String::from_utf8_lossy(&status.stderr),
-            );
-        }
+        ok = compile(&rc2, &res_path);
+    }
+    if !ok {
+        panic!("no working resource compiler (tried llvm-rc and rc.exe)");
     }
     if !res_path.exists() {
         panic!("resource .res not produced");
     }
+    // 诊断: 检查 .res 内是否含 RT_ICON(type 1)
+    let bytes = std::fs::read(&res_path).unwrap_or_default();
+    let has_icon = bytes.windows(6).any(|w| w == [0x00,0x00,0x00,0x00,0x01,0x00]);
+    println!("resource.res size={} has_rt_icon_marker={}", bytes.len(), has_icon);
     println!("cargo:rustc-link-arg-bins={}", res_path.display());
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=app.rc");
