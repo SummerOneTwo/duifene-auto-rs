@@ -13,4 +13,4 @@ arboard = { version = "3", default-features = false }
 slint-build = "1"
 
 [target.'cfg(windows)'.build-dependencies]
-winres = "0.1"
+embed-resource = "3"
