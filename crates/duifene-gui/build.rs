@@ -28,48 +28,54 @@ fn embed_windows_icon() {
     std::fs::write(&rc_path, format!("1 ICON \"{ico}\"\n"))
         .expect("failed to write app.rc");
 
-    // 找资源编译器: 优先 RC_PATH, 其次 llvm-rc, 再回退 rc.exe(在 PATH 或 SDK)
+    // 强制用 llvm-rc(windows runner 自带 LLVM 22.1)。
+    // rc.exe 在部分新 Windows 环境下对 .ico 的 ICON 生成有问题,只生成 group 无位图。
+    // llvm-rc 能正确展开 RT_ICON + RT_GROUP_ICON。
     let rc = std::env::var("RC_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("llvm-rc"));
-    // 在 Windows 上,llvm-rc 可能在 PATH;若无则回退 rc.exe。
-    // 注意: Windows job 走系统 rc.exe,它生成的 .res 是 MSVC COFF 格式。
-    let mut compile = |compiler: &Path, res: &Path| -> bool {
-        let out = Command::new(compiler)
-            .arg(format!("/fo{}", res.display()))
-            .arg(format!("/I{}", manifest_dir))
-            .arg(rc_path.display().to_string())
-            .output();
-        match out {
-            Ok(o) => {
-                println!(
-                    "resource compiler {} rc_out={} rc_err={}",
-                    compiler.display(),
-                    String::from_utf8_lossy(&o.stdout).trim(),
-                    String::from_utf8_lossy(&o.stderr).trim(),
-                );
-                o.status.success()
-            }
-            Err(_) => false,
+    let out = Command::new(&rc)
+        .arg(format!("/fo{}", res_path.display()))
+        .arg(format!("/I{}", manifest_dir))
+        .arg(rc_path.display().to_string())
+        .output();
+    let status = match out {
+        Ok(o) => {
+            println!(
+                "cargo:warning=resource compiler={} rc_out={} rc_err={}",
+                rc.display(),
+                String::from_utf8_lossy(&o.stdout).trim(),
+                String::from_utf8_lossy(&o.stderr).trim(),
+            );
+            o.status
         }
+        Err(e) => panic!("failed to run {}: {e}", rc.display()),
     };
-    let mut ok = compile(&rc, &res_path);
-    if !ok {
-        let rc2 = std::env::var("RC_PATH_FALLBACK")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("rc.exe"));
-        ok = compile(&rc2, &res_path);
-    }
-    if !ok {
-        panic!("no working resource compiler (tried llvm-rc and rc.exe)");
+    if !status.success() {
+        panic!("resource compiler ({}) failed", rc.display());
     }
     if !res_path.exists() {
         panic!("resource .res not produced");
     }
-    // 诊断: 检查 .res 内是否含 RT_ICON(type 1)
+    // 诊断: 粗略统计 .res 里出现的数字资源类型(数字类型写成 u16(x)+u16(0))
     let bytes = std::fs::read(&res_path).unwrap_or_default();
-    let has_icon = bytes.windows(6).any(|w| w == [0x00,0x00,0x00,0x00,0x01,0x00]);
-    println!("resource.res size={} has_rt_icon_marker={}", bytes.len(), has_icon);
+    let mut type_ids = std::collections::HashSet::new();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        let val = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+        let zero = u16::from_le_bytes([bytes[i + 2], bytes[i + 3]]);
+        if zero == 0 && (val == 1 || val == 14 || val == 3 || val == 16) {
+            type_ids.insert(val);
+        }
+        i += 1;
+    }
+    let mut ids: Vec<u32> = type_ids.into_iter().map(|v| v as u32).collect();
+    ids.sort();
+    println!(
+        "cargo:warning=resource.res size={} res_types={:?}",
+        bytes.len(),
+        ids
+    );
     println!("cargo:rustc-link-arg-bins={}", res_path.display());
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=app.rc");
