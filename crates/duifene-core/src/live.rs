@@ -1104,6 +1104,35 @@ impl Client for LiveClient {
             .map(|result| result.unwrap_or(CheckInResult::Failed("未知错误".to_string())))
             .collect()
     }
+
+    fn arrival_count(&mut self, activity_id: &str) -> Result<(u32, u32), ApiErr> {
+        let data = format!("action=getcheckintotalbyciid&ciid={activity_id}&t=cking");
+        let response = self.post_with_headers(
+            "/_CheckIn/MBCount.ashx",
+            data,
+            "/_CheckIn/PC/StudentNoCheckCount.aspx",
+            &[
+                ("X-Requested-With", "XMLHttpRequest"),
+                ("Origin", HOST),
+                ("Accept", "application/json, text/javascript, */*; q=0.01"),
+            ],
+        )?;
+        let json = parse_json(response)?;
+        // 该接口以数组形式返回多个课程的人数,取匹配 ciid 的一项;失败按"未知"放行
+        let array = json.as_array().ok_or_else(|| {
+            ApiErr::Parse("签到人数接口返回非数组".to_string())
+        })?;
+        for item in array {
+            if let Some(total) = item.get("TotalNumber").and_then(|v| v.as_u64())
+                && let Some(absent) = item.get("AbsenceNumber").and_then(|v| v.as_u64())
+            {
+                let total = total as u32;
+                let signed = total.saturating_sub(absent as u32);
+                return Ok((signed, total));
+            }
+        }
+        Err(ApiErr::Parse("签到人数接口无匹配数据".to_string()))
+    }
 }
 
 #[cfg(test)]

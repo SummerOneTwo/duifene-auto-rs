@@ -277,6 +277,7 @@ fn spawn_monitor(tx: mpsc::Sender<GuiMessage>, flag: Arc<AtomicBool>) {
                 delay_seconds: 0,
                 coords: storage::course_coordinates(&config),
                 refresh_every: 300,
+                signed_percent: config.signed_percent,
             },
         );
         let mut runner = Runner::new(engine, Duration::from_secs(2));
@@ -481,6 +482,23 @@ fn main() {
     }
 
     logic.set_has_cookie(!storage::load_config().cookie.is_empty());
+    let initial_percent = storage::load_config().signed_percent;
+    logic.set_signed_percent(initial_percent as i32);
+    logic.set_signed_percent_text(initial_percent.to_string().into());
+
+    // 设置页:保存签到人数门槛(解析输入文本,非法回退 30)
+    {
+        let weak = app_weak.clone();
+        logic.on_save_signed_percent_text(move |text| {
+            let parsed = text.trim().parse::<i32>().unwrap_or(30);
+            let clamped = parsed.clamp(0, 100);
+            let _ = storage::save_signed_percent(clamped as u32);
+            if let Some(app) = weak.upgrade() {
+                app.global::<Logic>()
+                    .set_signed_percent_text(clamped.to_string().into());
+            }
+        });
+    }
 
     // 启动时校验已保存的会话
     {

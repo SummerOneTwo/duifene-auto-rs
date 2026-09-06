@@ -11,6 +11,8 @@ pub struct EngineConfig {
     pub delay_seconds: i64,
     pub coords: HashMap<String, (f64, f64)>,
     pub refresh_every: u64,
+    /// 签到门槛:已签到人数占比达到该百分比(0-100)才自动签到;0 表示不启用该限制
+    pub signed_percent: u32,
 }
 
 impl Default for EngineConfig {
@@ -19,6 +21,7 @@ impl Default for EngineConfig {
             delay_seconds: 0,
             coords: HashMap::new(),
             refresh_every: 300,
+            signed_percent: 0,
         }
     }
 }
@@ -52,6 +55,12 @@ struct RetryItem {
     due: NaiveDateTime,
 }
 
+/// 等待签到人数达标的活动
+struct Waiting {
+    activity: SignActivity,
+    course_index: usize,
+}
+
 pub struct Engine {
     client: Box<dyn Client>,
     watched: Vec<Course>,
@@ -59,6 +68,7 @@ pub struct Engine {
     seen: HashSet<String>,
     pending: Vec<Pending>,
     retries: Vec<RetryItem>,
+    waiting: Vec<Waiting>,
     attempts: HashMap<String, u32>,
     running: bool,
     tick_no: u64,
@@ -85,6 +95,7 @@ impl Engine {
             seen: HashSet::new(),
             pending: Vec::new(),
             retries: Vec::new(),
+            waiting: Vec::new(),
             attempts: HashMap::new(),
             running: true,
             tick_no: 0,
@@ -99,6 +110,7 @@ impl Engine {
         self.running = false;
         self.pending.clear();
         self.retries.clear();
+        self.waiting.clear();
     }
 
     pub fn earliest_due(&self, now: NaiveDateTime) -> Option<std::time::Duration> {
@@ -128,6 +140,34 @@ impl Engine {
             events.push(Event::Warn(format!("登录失效,已自动停止: {error}")));
             self.stop();
             return events;
+        }
+
+        // 先处理上一轮遗留下来等待人数达标的活动(新发现的活动本 tick 不重查,
+        // 避免同一 tick 内重复查询导致阈值瞬时翻盘)
+        if !self.waiting.is_empty() {
+            let mut still_waiting = Vec::new();
+            let mut now_ready: Vec<(SignActivity, usize)> = Vec::new();
+            for item in std::mem::take(&mut self.waiting) {
+                if self.reached_threshold(&item.activity) {
+                    now_ready.push((item.activity, item.course_index));
+                } else {
+                    still_waiting.push(item);
+                }
+            }
+            self.waiting = still_waiting;
+            if !now_ready.is_empty() {
+                let mut ready_batch: Vec<(SignReq, usize)> = Vec::new();
+                for (activity, course_index) in now_ready {
+                    events.push(Event::Info(format!(
+                        "签到人数已达标,签到 [{}]",
+                        self.watched[course_index].name
+                    )));
+                    if let Some(request) = self.sign_request(activity, course_index) {
+                        ready_batch.push((request, course_index));
+                    }
+                }
+                events.extend(self.sign_all(ready_batch, now));
+            }
         }
 
         let mut due_items: Vec<Pending> = Vec::new();
@@ -184,7 +224,8 @@ impl Engine {
         let fetched = self.client.fetch_all(&self.watched);
         let mut immediate: Vec<(SignActivity, usize)> = Vec::new();
 
-        for (course_index, (course, fetched_result)) in self.watched.iter().zip(fetched).enumerate()
+        for (course_index, (course_name, fetched_result)) in
+            self.watched_names().into_iter().zip(fetched).enumerate()
         {
             let rows = match fetched_result {
                 Ok(rows) => rows,
@@ -192,7 +233,7 @@ impl Engine {
                     if self.tick_no % 10 == 1 {
                         events.push(Event::Warn(format!(
                             "课程 {} 拉取失败: {error}",
-                            course.name
+                            course_name
                         )));
                     }
                     continue;
@@ -205,11 +246,19 @@ impl Engine {
                     continue;
                 }
                 events.push(Event::Found {
-                    course_name: course.name.clone(),
+                    course_name: course_name.clone(),
                     activity_id: activity.id.clone(),
                     kind: kind_label(activity.r#type).to_string(),
                     code: activity.code.clone(),
                 });
+                // 签到人数门槛:未达标先挂起等待,达标后才安排签到
+                if !self.reached_threshold(&activity) {
+                    self.waiting.push(Waiting {
+                        activity,
+                        course_index,
+                    });
+                    continue;
+                }
                 if self.config.delay_seconds > 0 {
                     let due = now + ChronoDuration::seconds(self.config.delay_seconds);
                     self.pending.push(Pending {
@@ -219,7 +268,7 @@ impl Engine {
                     });
                     events.push(Event::Info(format!(
                         "将在 {} 秒后自动签到 [{}]",
-                        self.config.delay_seconds, course.name
+                        self.config.delay_seconds, course_name
                     )));
                 } else {
                     immediate.push((activity, course_index));
@@ -242,6 +291,30 @@ impl Engine {
             )));
         }
         events
+    }
+
+    /// 返回所有被监控课程的名称(按顺序),用于在循环中避免借用 self.watched
+    fn watched_names(&self) -> Vec<String> {
+        self.watched.iter().map(|course| course.name.clone()).collect()
+    }
+
+    /// 签到人数是否达到门槛。signed_percent==0 表示不启用限制,视为达到;
+    /// 查询失败时保守放行(避免因接口问题永远错过签到)。
+    fn reached_threshold(&mut self, activity: &SignActivity) -> bool {
+        let percent = self.config.signed_percent;
+        if percent == 0 {
+            return true;
+        }
+        match self.client.arrival_count(&activity.id) {
+            Ok((signed, total)) => {
+                if total == 0 {
+                    // 无总人数信息,保守放行
+                    return true;
+                }
+                (signed as f64 / total as f64) >= (percent as f64 / 100.0)
+            }
+            Err(_) => true,
+        }
     }
 
     fn sign_request(&mut self, activity: SignActivity, course_index: usize) -> Option<SignReq> {
@@ -335,6 +408,7 @@ mod tests {
             delay_seconds,
             coords: HashMap::new(),
             refresh_every: 300,
+            signed_percent: 0,
         }
     }
 
@@ -508,6 +582,7 @@ mod tests {
                 delay_seconds: 0,
                 coords,
                 refresh_every: 300,
+                signed_percent: 0,
             },
         );
 
@@ -565,6 +640,7 @@ mod tests {
                 delay_seconds: 0,
                 coords: HashMap::new(),
                 refresh_every: 1,
+                signed_percent: 0,
             },
         );
 
@@ -575,6 +651,70 @@ mod tests {
         )));
         let signed: Vec<&str> = signed_ok_ids(&events);
         assert!(signed.contains(&"a1") && signed.contains(&"a2"));
+    }
+
+    #[test]
+    fn below_threshold_defers_sign() {
+        let mut client = MockClient::new();
+        client.queue_rows("c1", vec![row(&code_activity("a1"))]);
+        client.arrival_results.push_back(Ok((2, 10))); // 20% < 30%
+        let mut engine = Engine::new(
+            Box::new(client),
+            vec![course("101", "c1", "课程一")],
+            EngineConfig {
+                delay_seconds: 0,
+                coords: HashMap::new(),
+                refresh_every: 1,
+                signed_percent: 30,
+            },
+        );
+
+        let events = engine.tick(dt("2026/08/10 08:00:00"));
+        assert!(!events.iter().any(|event| matches!(event, Event::Signed { .. })));
+        assert_eq!(engine.waiting.len(), 1);
+    }
+
+    #[test]
+    fn reaching_threshold_signs_after_defers_then_signs() {
+        let mut client = MockClient::new();
+        client.queue_rows("c1", vec![row(&code_activity("a1"))]);
+        // 第一次 tick: 3/10 = 30% 达标 => 直接签
+        client.arrival_results.push_back(Ok((3, 10)));
+        let mut engine = Engine::new(
+            Box::new(client),
+            vec![course("101", "c1", "课程一")],
+            EngineConfig {
+                delay_seconds: 0,
+                coords: HashMap::new(),
+                refresh_every: 1,
+                signed_percent: 30,
+            },
+        );
+
+        let events = engine.tick(dt("2026/08/10 08:00:00"));
+        assert!(signed_ok_ids(&events).contains(&"a1"));
+        assert!(engine.waiting.is_empty());
+    }
+
+    #[test]
+    fn arrival_query_error_defers_conservatively() {
+        // 查询失败时保守放行(直接签),避免错过签到
+        let mut client = MockClient::new();
+        client.queue_rows("c1", vec![row(&code_activity("a1"))]);
+        client.arrival_results.push_back(Err(ApiErr::Parse("x".to_string())));
+        let mut engine = Engine::new(
+            Box::new(client),
+            vec![course("101", "c1", "课程一")],
+            EngineConfig {
+                delay_seconds: 0,
+                coords: HashMap::new(),
+                refresh_every: 1,
+                signed_percent: 30,
+            },
+        );
+
+        let events = engine.tick(dt("2026/08/10 08:00:00"));
+        assert!(signed_ok_ids(&events).contains(&"a1"));
     }
 
     #[test]

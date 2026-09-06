@@ -48,7 +48,7 @@ export struct StatRow {
 }
 
 export global Logic {
-    // 0=首页 1=课程 2=统计
+    // 0=首页 1=课程 2=统计 3=设置
     in-out property <int> active-page: 0;
     in-out property <bool> login-open: false;
     in-out property <string> login-link;
@@ -66,6 +66,10 @@ export global Logic {
     in property <[StatRow]> kind-stats;
     in property <[StatRow]> result-stats;
     in property <[StatRow]> course-stats;
+    // 设置:签到人数门槛(百分比 0-100)
+    in property <int> signed-percent: 30;
+    // 设置页输入框文本(存 config 时的字符串表示,便于 LineEdit 双向绑定)
+    in-out property <string> signed-percent-text: "30";
 
     callback start-stop();
     callback nav(int);
@@ -74,6 +78,7 @@ export global Logic {
     callback login-cancel();
     callback logout();
     callback copy-auth-link();
+    callback save-signed-percent-text(string);
     // 无框窗口控制
     callback titlebar-press();
     callback win-minimize();
@@ -128,6 +133,26 @@ component IconChart inherits Rectangle {
     Rectangle { x: 1px; y: 9px; width: 3.6px; height: 7px; border-radius: 1.5px; background: parent.icon-color; }
     Rectangle { x: 6.7px; y: 4px; width: 3.6px; height: 12px; border-radius: 1.5px; background: parent.icon-color; }
     Rectangle { x: 12.4px; y: 0px; width: 3.6px; height: 16px; border-radius: 1.5px; background: parent.icon-color; }
+}
+
+// 设置:齿轮(圆环 + 四个方向齿)
+component IconSettings inherits Rectangle {
+    in property <color> icon-color: Theme.fg;
+    width: 17px;
+    height: 17px;
+    // 外齿(上下左右)
+    Rectangle { x: 7.5px; y: 0px; width: 2px; height: 3px; background: parent.icon-color; }
+    Rectangle { x: 7.5px; y: 14px; width: 2px; height: 3px; background: parent.icon-color; }
+    Rectangle { x: 0px; y: 7.5px; width: 3px; height: 2px; background: parent.icon-color; }
+    Rectangle { x: 14px; y: 7.5px; width: 3px; height: 2px; background: parent.icon-color; }
+    // 齿轮中心圆(外圈 + 内孔)
+    Rectangle {
+        x: 4px; y: 4px; width: 9px; height: 9px;
+        border-radius: 4.5px;
+        border-width: 2px;
+        border-color: parent.icon-color;
+        background: transparent;
+    }
 }
 
 // 圆形状态勾(事件行)
@@ -273,6 +298,7 @@ component NavItem inherits Rectangle {
             if root.page == 0: IconGrid { icon-color: Theme.fg; }
             if root.page == 1: IconBook { icon-color: Theme.fg; }
             if root.page == 2: IconChart { icon-color: Theme.fg; }
+            if root.page == 3: IconSettings { icon-color: Theme.fg; }
         }
         Text {
             text: root.label;
@@ -451,6 +477,7 @@ export component MainWindow inherits Window {
                 NavItem { label: "首页"; page: 0; active: Logic.active-page == 0; }
                 NavItem { label: "课程"; page: 1; active: Logic.active-page == 1; }
                 NavItem { label: "统计"; page: 2; active: Logic.active-page == 2; }
+                NavItem { label: "设置"; page: 3; active: Logic.active-page == 3; }
                 Rectangle { vertical-stretch: 1; }
                 // 底部:用户卡片 + 退出(原版样式)
                 if Logic.has-cookie: Rectangle {
@@ -796,6 +823,85 @@ export component MainWindow inherits Window {
                         title: "各课程事件数";
                         rows: Logic.course-stats;
                         vertical-stretch: 1;
+                    }
+                }
+            }
+            if Logic.active-page == 3: Rectangle {
+                VerticalLayout {
+                    padding-left: 26px;
+                    padding-right: 26px;
+                    padding-top: 58px;
+                    padding-bottom: 22px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "设置";
+                            font-size: 17px;
+                            font-weight: 700;
+                            color: Theme.fg;
+                            vertical-alignment: center;
+                            horizontal-stretch: 0;
+                        }
+                    }
+                    // 签到人数门槛卡片
+                    Rectangle {
+                        height: 168px;
+                        background: Theme.card-bg;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: 14px;
+                        VerticalLayout {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            spacing: 10px;
+                            Text {
+                                text: "签到人数门槛";
+                                font-size: 14px;
+                                font-weight: 600;
+                                color: Theme.fg;
+                            }
+                            Text {
+                                text: "当已签到人数达到班级总人数的该百分比时,才自动签到(推荐 30-70%;填 0 表示不启用此限制)。";
+                                font-size: 12px;
+                                color: Theme.muted-fg;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: start;
+                                Rectangle {
+                                    width: 10px;
+                                    height: 12px;
+                                    y: (parent.height - 12px) / 2;
+                                    Rectangle { x: 0; y: 0; width: 10px; height: 12px; border-radius: 2px; border-width: 1px; border-color: Theme.primary; background: transparent; }
+                                    Rectangle { x: 2px; y: 3px; width: 6px; height: 6px; border-radius: 1px; background: Theme.primary; }
+                                }
+                                Text {
+                                    text: "百分比";
+                                    font-size: 13px;
+                                    color: Theme.fg;
+                                    vertical-alignment: center;
+                                }
+                                LineEdit {
+                                    text <=> Logic.signed-percent-text;
+                                    width: 120px;
+                                }
+                                Rectangle {
+                                    width: 8px;
+                                }
+                                WButton {
+                                    label: "保存";
+                                    primary: true;
+                                    width: 68px;
+                                    clicked => {
+                                        Logic.save-signed-percent-text(Logic.signed-percent-text);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -150,6 +150,9 @@ fn main() {
     render_to_ppm("target/screenshot-courses.ppm");
     logic.set_active_page(2);
     render_to_ppm("target/screenshot-stats.ppm");
+    logic.set_active_page(3);
+    logic.set_signed_percent_text("30".into());
+    render_to_ppm("target/screenshot-settings.ppm");
     logic.set_active_page(0);
     logic.set_login_open(true);
     render_to_ppm("target/screenshot-login.ppm");

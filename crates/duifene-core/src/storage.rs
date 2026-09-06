@@ -24,6 +24,20 @@ pub struct AppConfig {
     pub locations: BTreeMap<String, CourseLocation>,
     #[serde(default)]
     pub learned_center: Option<(f64, f64)>,
+    /// 签到门槛:已签到人数占比达到该百分比(0-100)才自动签到;0 表示不启用该限制
+    #[serde(default = "default_signed_percent")]
+    pub signed_percent: u32,
+}
+
+fn default_signed_percent() -> u32 {
+    30
+}
+
+/// 保存签到百分比门槛(设置页)
+pub fn save_signed_percent(percent: u32) -> io::Result<()> {
+    let mut config = load_config();
+    config.signed_percent = percent.clamp(0, 100);
+    write_config(&config)
 }
 
 fn config_path() -> PathBuf {

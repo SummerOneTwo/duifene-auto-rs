@@ -13,6 +13,9 @@ pub(crate) struct MockClient {
     pub sign_requests: Vec<Vec<SignReq>>,
     pub coords_results: VecDeque<Option<(f64, f64)>>,
     pub coords_calls: usize,
+    /// 签到人数查询返回队列:(已签到, 总人数);为空默认返回 (100,100) 放行
+    pub arrival_results: VecDeque<Result<(u32, u32), ApiErr>>,
+    pub arrival_calls: usize,
 }
 
 impl MockClient {
@@ -27,6 +30,8 @@ impl MockClient {
             sign_requests: Vec::new(),
             coords_results: VecDeque::new(),
             coords_calls: 0,
+            arrival_results: VecDeque::new(),
+            arrival_calls: 0,
         }
     }
 
@@ -103,5 +108,12 @@ impl Client for MockClient {
             .iter()
             .map(|request| CheckInResult::Ok(format!("mock ok: {}", request.activity.id)))
             .collect()
+    }
+
+    fn arrival_count(&mut self, _activity_id: &str) -> Result<(u32, u32), ApiErr> {
+        self.arrival_calls += 1;
+        self.arrival_results
+            .pop_front()
+            .unwrap_or(Ok((100, 100)))
     }
 }

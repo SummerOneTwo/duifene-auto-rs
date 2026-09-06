@@ -36,6 +36,8 @@ pub trait Client {
     fn fetch_all(&mut self, courses: &[Course]) -> Vec<Result<Vec<RawRow>, ApiErr>>;
     fn activity_coords(&mut self, activity: &SignActivity, course: &Course) -> Option<(f64, f64)>;
     fn sign_many(&mut self, requests: &[SignReq]) -> Vec<CheckInResult>;
+    /// 查询某签到活动的已签到人数与总人数;返回 (已签到人数, 总人数)
+    fn arrival_count(&mut self, activity_id: &str) -> Result<(u32, u32), ApiErr>;
 }
 
 #[cfg(test)]

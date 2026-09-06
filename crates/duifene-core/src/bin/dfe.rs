@@ -239,6 +239,7 @@ fn command_watch(arguments: &[String]) {
         delay_seconds,
         coords: storage::course_coordinates(&config),
         refresh_every: 300,
+        signed_percent: config.signed_percent,
     };
     let engine = Engine::new(Box::new(client), courses.clone(), engine_config);
     let mut runner = Runner::new(engine, Duration::from_secs(2));
