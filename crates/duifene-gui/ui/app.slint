@@ -590,17 +590,28 @@ export component MainWindow inherits Window {
                             Rectangle { height: 1px; background: Theme.border; }
                             if Logic.activities.length == 0: Rectangle {
                                 vertical-stretch: 1;
-                                HorizontalLayout {
+                                VerticalLayout {
                                     alignment: center;
-                                    VerticalLayout {
-                                        alignment: center;
-                                        spacing: 10px;
-                                        IconMail {}
-                                        Text {
-                                            text: "暂无活动记录";
-                                            color: Theme.muted-fg;
-                                            font-size: 13px;
-                                            horizontal-alignment: center;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 24px;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            IconMail {}
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 18px;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "暂无活动记录";
+                                                color: Theme.muted-fg;
+                                                font-size: 13px;
+                                                horizontal-alignment: center;
+                                            }
                                         }
                                     }
                                 }
@@ -685,52 +696,6 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
-                    }
-                }
-                // 悬浮监控按钮(原版:底部居中圆形播放/胶囊计时)
-                Rectangle {
-                    width: Logic.monitoring ? 150px : 64px;
-                    height: 64px;
-                    x: (parent.width - self.width) / 2;
-                    y: parent.height - self.height - 24px;
-                    border-radius: 32px;
-                    background: fta.has-hover ? Theme.primary-hover : Theme.primary;
-                    if Logic.monitoring: HorizontalLayout {
-                        padding-left: 26px;
-                        padding-right: 22px;
-                        spacing: 10px;
-                        alignment: center;
-                        Dot {
-                            size: 8px;
-                            y: (parent.height - 8px) / 2;
-                            background: Theme.success;
-                        }
-                        Text {
-                            text: Logic.elapsed;
-                            font-size: 14px;
-                            font-weight: 600;
-                            color: Theme.primary-fg;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            width: 14px;
-                            height: 16px;
-                            y: (parent.height - 16px) / 2;
-                            Rectangle { x: 0; y: 0; width: 4.5px; height: 16px; border-radius: 1.5px; background: Theme.primary-fg; }
-                            Rectangle { x: 9.5px; y: 0; width: 4.5px; height: 16px; border-radius: 1.5px; background: Theme.primary-fg; }
-                        }
-                    }
-                    if !Logic.monitoring: Path {
-                        width: 18px;
-                        height: 20px;
-                        x: (parent.width - 18px) / 2 + 2px;
-                        y: (parent.height - 20px) / 2;
-                        fill: Theme.primary-fg;
-                        commands: "M 0 0 L 15 10 L 0 20 Z";
-                    }
-                    fta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { Logic.start-stop(); }
                     }
                 }
             }
@@ -904,6 +869,52 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+            // 悬浮监控按钮:用于所有页面(首页/课程/统计/设置),底部居中
+            Rectangle {
+                width: Logic.monitoring ? 150px : 64px;
+                height: 64px;
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 24px;
+                border-radius: 32px;
+                background: fta.has-hover ? Theme.primary-hover : Theme.primary;
+                if Logic.monitoring: HorizontalLayout {
+                    padding-left: 26px;
+                    padding-right: 22px;
+                    spacing: 10px;
+                    alignment: center;
+                    Dot {
+                        size: 8px;
+                        y: (parent.height - 8px) / 2;
+                        background: Theme.success;
+                    }
+                    Text {
+                        text: Logic.elapsed;
+                        font-size: 14px;
+                        font-weight: 600;
+                        color: Theme.primary-fg;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 14px;
+                        height: 16px;
+                        y: (parent.height - 16px) / 2;
+                        Rectangle { x: 0; y: 0; width: 4.5px; height: 16px; border-radius: 1.5px; background: Theme.primary-fg; }
+                        Rectangle { x: 9.5px; y: 0; width: 4.5px; height: 16px; border-radius: 1.5px; background: Theme.primary-fg; }
+                    }
+                }
+                if !Logic.monitoring: Path {
+                    width: 18px;
+                    height: 20px;
+                    x: (parent.width - 18px) / 2 + 2px;
+                    y: (parent.height - 20px) / 2;
+                    fill: Theme.primary-fg;
+                    commands: "M 0 0 L 15 10 L 0 20 Z";
+                }
+                fta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Logic.start-stop(); }
                 }
             }
         }
