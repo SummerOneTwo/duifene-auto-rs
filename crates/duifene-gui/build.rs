@@ -73,7 +73,6 @@ fn embed_windows_icon() {
         panic!("resource .res not produced");
     }
     println!("cargo:rustc-link-arg-bins={}", res_path.display());
-    println!("cargo:rustc-link-arg-tests={}", res_path.display());
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=app.rc");
 }
