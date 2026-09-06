@@ -154,5 +154,29 @@ fn main() {
     logic.set_login_open(true);
     render_to_ppm("target/screenshot-login.ppm");
 
+    // ===== 未登录状态 =====
+    logic.set_login_open(false);
+    logic.set_has_cookie(false);
+    logic.set_session_valid(false);
+    logic.set_login_name("".into());
+    logic.set_monitoring(false);
+    logic.set_elapsed("00:00:00".into());
+    logic.set_courses_count(0);
+    logic.set_found_count(0);
+    logic.set_signed_count(0);
+    logic.set_courses(Rc::new(slint::VecModel::<CourseRow>::default()).into());
+    logic.set_activities(Rc::new(slint::VecModel::<ActivityRow>::default()).into());
+    logic.set_events(Rc::new(slint::VecModel::<EventRow>::default()).into());
+    logic.set_kind_stats(Rc::new(slint::VecModel::<StatRow>::default()).into());
+    logic.set_result_stats(Rc::new(slint::VecModel::<StatRow>::default()).into());
+    logic.set_course_stats(Rc::new(slint::VecModel::<StatRow>::default()).into());
+    render_to_ppm("target/screenshot-home-notlogin.ppm");
+
+    logic.set_active_page(1);
+    render_to_ppm("target/screenshot-courses-notlogin.ppm");
+    logic.set_active_page(2);
+    render_to_ppm("target/screenshot-stats-notlogin.ppm");
+    logic.set_active_page(0);
+
     let _ = app.window().hide();
 }
