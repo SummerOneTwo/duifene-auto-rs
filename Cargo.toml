@@ -16,7 +16,8 @@ rand = "0.9"
 ureq = { version = "3", default-features = false,
          features = ["native-tls", "gzip"] }
 slint = { version = "1", default-features = false,
-          features = ["std", "compat-1-2", "backend-winit", "renderer-software"] }
+          features = ["std", "compat-1-2", "backend-winit", "renderer-software",
+                      "unstable-winit-030"] }
 
 [profile.release]
 lto = "fat"

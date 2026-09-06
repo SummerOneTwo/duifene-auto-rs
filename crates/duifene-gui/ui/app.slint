@@ -1,4 +1,4 @@
-import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { LineEdit, ListView } from "std-widgets.slint";
 
 // 纸主题色板（对齐原 gpui 版 Duifene Paper Light）
 export global Theme {
@@ -11,8 +11,6 @@ export global Theme {
     out property <color> muted-fg: #8a857a;
     out property <color> card-bg: #ffffff;
     out property <color> input-border: #dcd9cf;
-    out property <color> list-even: #faf9f6;
-    out property <color> list-active: #f0eee7;
     out property <color> primary: #1c1917;
     out property <color> primary-hover: #33302b;
     out property <color> primary-fg: #faf9f6;
@@ -76,39 +74,81 @@ export global Logic {
     callback login-cancel();
     callback logout();
     callback copy-auth-link();
+    // 无框窗口控制
+    callback titlebar-press();
+    callback win-minimize();
+    callback win-maximize();
+    callback win-close();
+}
+
+// 固定列宽:表头与数据行共用,保证对齐
+export global Cols {
+    out property <length> kind: 96px;
+    out property <length> time: 76px;
+    out property <length> event-time: 60px;
+    out property <length> event-course: 64px;
+}
+
+component Dot inherits Rectangle {
+    in property <length> size: 8px;
+    width: size;
+    height: size;
+    border-radius: size / 2;
+}
+
+// 纸主题按钮:primary 深色主按钮,否则白底描边次要按钮
+component WButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> danger-hover;
+    in property <length> height-w: 32px;
+    in property <length> font-size-w: 13px;
+    callback clicked;
+    height: height-w;
+    border-radius: 8px;
+    background: !primary && ta.has-hover ? (danger-hover ? Theme.danger : Theme.secondary-hover)
+        : primary && ta.has-hover ? Theme.primary-hover
+        : primary ? Theme.primary : Theme.card-bg;
+    border-width: primary ? 0 : 1px;
+    border-color: Theme.input-border;
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            text: root.label;
+            font-size: font-size-w;
+            font-weight: primary ? 600 : 400;
+            color: primary || (ta.has-hover && danger-hover) ? Theme.primary-fg : Theme.fg;
+            vertical-alignment: center;
+            wrap: no-wrap;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
 }
 
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <bool> active;
-    in property <string> glyph;
     in property <int> page;
-    height: 38px;
+    height: 36px;
     border-radius: 8px;
-    background: active ? Theme.secondary-bg : transparent;
+    background: active ? Theme.secondary-bg : (ta.has-hover ? Theme.secondary-hover : transparent);
     HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 10px;
-        alignment: center;
-        Text {
-            text: root.glyph;
-            font-size: 15px;
-            color: Theme.fg;
-            width: 20px;
-        }
+        padding-left: 16px;
         Text {
             text: root.label;
             font-size: 14px;
+            font-weight: active ? 600 : 400;
             color: Theme.fg;
-            horizontal-alignment: center;
             vertical-alignment: center;
         }
     }
-    TouchArea {
-        clicked => {
-            Logic.nav(root.page);
-        }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { Logic.nav(root.page); }
     }
 }
 
@@ -119,7 +159,7 @@ component StatCard inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border;
     border-radius: 12px;
-    vertical-layout := VerticalLayout {
+    VerticalLayout {
         padding: 14px;
         spacing: 8px;
         Text {
@@ -143,7 +183,7 @@ component StatCard inherits Rectangle {
                     background: transparent;
                     HorizontalLayout {
                         padding-right: 4px;
-                        spacing: 8px;
+                        spacing: 10px;
                         Text {
                             text: row.label;
                             font-size: 13px;
@@ -156,9 +196,9 @@ component StatCard inherits Rectangle {
                             horizontal-stretch: 1;
                             Rectangle {
                                 x: 0;
-                                y: (parent.height - 12px) / 2;
-                                height: 12px;
-                                border-radius: 3px;
+                                y: (parent.height - 10px) / 2;
+                                height: 10px;
+                                border-radius: 5px;
                                 background: row.color == 0 ? Theme.info
                                     : row.color == 1 ? Theme.success
                                     : row.color == 2 ? Theme.warning
@@ -183,168 +223,375 @@ component StatCard inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "对分易自动签到";
+    no-frame: true;
+    resize-border-width: 6px;
     min-width: 860px;
     min-height: 560px;
     preferred-width: 980px;
     preferred-height: 640px;
     background: Theme.bg;
 
-    HorizontalLayout {
-        // 侧边栏
+    VerticalLayout {
+        // ===== 自绘标题栏 =====
         Rectangle {
-            width: 190px;
+            height: 40px;
             background: Theme.sidebar-bg;
-            VerticalLayout {
-                padding: 12px;
-                spacing: 6px;
+            drag := TouchArea {
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        Logic.titlebar-press();
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 14px;
                 Text {
                     text: "对分易自动签到";
-                    font-size: 15px;
+                    font-size: 13px;
                     font-weight: 700;
                     color: Theme.fg;
-                    height: 34px;
                     vertical-alignment: center;
+                    horizontal-stretch: 1;
                 }
-                NavItem { label: "首页"; glyph: "⌂"; page: 0; active: Logic.active-page == 0; }
-                NavItem { label: "课程"; glyph: "☰"; page: 1; active: Logic.active-page == 1; }
-                NavItem { label: "统计"; glyph: "▦"; page: 2; active: Logic.active-page == 2; }
-                Rectangle { vertical-stretch: 1; }
-                // 会话信息
-                if Logic.has-cookie && Logic.login-name != "": Text {
-                    text: Logic.login-name;
-                    font-size: 13px;
-                    color: Theme.muted-fg;
-                    height: 22px;
-                    overflow: elide;
+                // 窗口控制按钮(渲染在拖动区之上)
+                Rectangle {
+                    width: 44px;
+                    height: 40px;
+                    background: wta.has-hover ? Theme.secondary-hover : transparent;
+                    Text {
+                        text: "–";
+                        font-size: 14px;
+                        color: Theme.fg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    wta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Logic.win-minimize(); }
+                    }
                 }
-                if Logic.has-cookie: Button {
-                    text: "退出登录";
-                    clicked => { Logic.logout(); }
+                Rectangle {
+                    width: 44px;
+                    height: 40px;
+                    background: mta.has-hover ? Theme.secondary-hover : transparent;
+                    Text {
+                        text: "□";
+                        font-size: 12px;
+                        color: Theme.fg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    mta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Logic.win-maximize(); }
+                    }
                 }
-                Button {
-                    text: Logic.has-cookie ? "重新登录" : "微信登录";
-                    clicked => { Logic.open-login(); }
+                Rectangle {
+                    width: 48px;
+                    height: 40px;
+                    background: cta.has-hover ? Theme.danger : transparent;
+                    Text {
+                        text: "×";
+                        font-size: 16px;
+                        color: cta.has-hover ? #ffffff : Theme.fg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    cta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Logic.win-close(); }
+                    }
                 }
             }
         }
-        // 主内容
-        Rectangle {
-            if Logic.active-page == 0: Rectangle {
-                vertical-layout := VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
-                    // 顶栏: 会话状态 + 监控按钮
-                    Rectangle {
-                        height: 64px;
-                        background: Theme.card-bg;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: 12px;
-                        HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 10px;
-                            // 状态点
-                            Rectangle {
-                                width: 10px;
-                                y: (parent.height - 10px) / 2;
-                                border-radius: 5px;
-                                background: !Logic.has-cookie ? Theme.muted-fg
-                                    : Logic.session-valid ? Theme.success : Theme.warning;
-                            }
-                            Text {
-                                text: !Logic.has-cookie ? "未登录"
-                                    : Logic.session-valid ? ("会话有效 · " + Logic.login-name)
-                                    : "会话待确认";
-                                font-size: 14px;
-                                color: Theme.fg;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-                            if Logic.monitoring: Text {
-                                text: Logic.elapsed;
-                                font-size: 14px;
-                                color: Theme.muted-fg;
-                                vertical-alignment: center;
-                            }
-                            // 开始/停止按钮
-                            Rectangle {
-                                width: 128px;
-                                height: 40px;
-                                y: (parent.height - 40px) / 2;
-                                border-radius: 20px;
-                                background: Logic.monitoring ? touch.pressed ? Theme.primary-hover : Theme.primary : touch.pressed ? Theme.primary-hover : Theme.primary;
-                                HorizontalLayout {
-                                    padding-left: 14px;
-                                    padding-right: 14px;
-                                    spacing: 8px;
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 8px;
-                                        y: (parent.height - 8px) / 2;
-                                        border-radius: 4px;
-                                        background: Logic.monitoring ? Theme.success : Theme.muted-fg;
+        // ===== 主体 =====
+        HorizontalLayout {
+            // 侧边栏
+            Rectangle {
+                width: 190px;
+                background: Theme.sidebar-bg;
+                VerticalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-bottom: 12px;
+                    spacing: 6px;
+                    Rectangle { height: 2px; }
+                    NavItem { label: "首页"; page: 0; active: Logic.active-page == 0; }
+                    NavItem { label: "课程"; page: 1; active: Logic.active-page == 1; }
+                    NavItem { label: "统计"; page: 2; active: Logic.active-page == 2; }
+                    Rectangle { vertical-stretch: 1; }
+                    if Logic.has-cookie && Logic.login-name != "": Text {
+                        text: Logic.login-name;
+                        font-size: 12px;
+                        color: Theme.muted-fg;
+                        height: 20px;
+                        overflow: elide;
+                    }
+                    if Logic.has-cookie: WButton {
+                        label: "退出登录";
+                        clicked => { Logic.logout(); }
+                    }
+                    WButton {
+                        label: Logic.has-cookie ? "重新登录" : "微信登录";
+                        clicked => { Logic.open-login(); }
+                    }
+                }
+            }
+            // 主内容
+            Rectangle {
+                if Logic.active-page == 0: Rectangle {
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+                        // 顶栏: 会话状态 + 监控按钮
+                        Rectangle {
+                            height: 60px;
+                            background: Theme.card-bg;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                Dot {
+                                    size: 9px;
+                                    y: (parent.height - 9px) / 2;
+                                    background: !Logic.has-cookie ? Theme.muted-fg
+                                        : Logic.session-valid ? Theme.success : Theme.warning;
+                                }
+                                Text {
+                                    text: !Logic.has-cookie ? "未登录"
+                                        : Logic.session-valid ? ("会话有效 · " + Logic.login-name)
+                                        : "会话待确认";
+                                    font-size: 14px;
+                                    color: Theme.fg;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                if Logic.monitoring: Text {
+                                    text: Logic.elapsed;
+                                    font-size: 14px;
+                                    color: Theme.muted-fg;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    width: 108px;
+                                    height: 38px;
+                                    y: (parent.height - 38px) / 2;
+                                    border-radius: 19px;
+                                    background: bta.has-hover ? Theme.primary-hover : Theme.primary;
+                                    HorizontalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        spacing: 8px;
+                                        alignment: center;
+                                        Dot {
+                                            size: 7px;
+                                            y: (parent.height - 7px) / 2;
+                                            background: Logic.monitoring ? Theme.success : Theme.muted-fg;
+                                        }
+                                        Text {
+                                            text: Logic.monitoring ? "停止监控" : "开始监控";
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            color: Theme.primary-fg;
+                                            vertical-alignment: center;
+                                        }
                                     }
-                                    Text {
-                                        text: Logic.monitoring ? "停止监控" : "开始监控";
-                                        font-size: 14px;
-                                        font-weight: 600;
-                                        color: Theme.primary-fg;
+                                    bta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { Logic.start-stop(); }
                                     }
                                 }
-                                touch := TouchArea {
-                                    clicked => { Logic.start-stop(); }
+                            }
+                        }
+                        // 活动表
+                        Rectangle {
+                            height: 208px;
+                            background: Theme.card-bg;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
+                            clip: true;
+                            VerticalLayout {
+                                spacing: 0;
+                                Rectangle {
+                                    height: 34px;
+                                    background: Theme.secondary-bg;
+                                    HorizontalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        spacing: 12px;
+                                        Text {
+                                            text: "课程";
+                                            horizontal-stretch: 1;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            color: Theme.muted-fg;
+                                            vertical-alignment: center;
+                                        }
+                                        Text { text: "类型"; width: Cols.kind; font-size: 12px; font-weight: 600; color: Theme.muted-fg; vertical-alignment: center; }
+                                        Text { text: "时间"; width: Cols.time; font-size: 12px; font-weight: 600; color: Theme.muted-fg; vertical-alignment: center; }
+                                        Text { text: "状态"; horizontal-stretch: 1; font-size: 12px; font-weight: 600; color: Theme.muted-fg; vertical-alignment: center; }
+                                    }
+                                }
+                                Rectangle { height: 1px; background: Theme.border; }
+                                if Logic.activities.length == 0: Text {
+                                    text: "暂无活动,监控开启后自动检测签到";
+                                    color: Theme.muted-fg;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
+                                ListView {
+                                    for row in Logic.activities: Rectangle {
+                                        height: 34px;
+                                        background: Theme.card-bg;
+                                        HorizontalLayout {
+                                            padding-left: 14px;
+                                            padding-right: 14px;
+                                            spacing: 12px;
+                                            Text {
+                                                text: row.course;
+                                                horizontal-stretch: 1;
+                                                font-size: 13px;
+                                                color: Theme.fg;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text { text: row.kind; width: Cols.kind; font-size: 13px; color: Theme.fg; overflow: elide; vertical-alignment: center; }
+                                            Text { text: row.time; width: Cols.time; font-size: 13px; color: Theme.muted-fg; vertical-alignment: center; }
+                                            Text {
+                                                text: row.status == 0 ? "检测中" : row.status == 1 ? "已签" : row.status == 3 ? "已结束" : ("失败: " + row.detail);
+                                                horizontal-stretch: 1;
+                                                font-size: 13px;
+                                                color: row.status == 0 ? Theme.info : row.status == 1 ? Theme.success : row.status == 3 ? Theme.muted-fg : Theme.warning;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // 事件日志
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: Theme.card-bg;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
+                            clip: true;
+                            VerticalLayout {
+                                spacing: 0;
+                                Rectangle {
+                                    height: 34px;
+                                    background: Theme.secondary-bg;
+                                    HorizontalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        Text {
+                                            text: "事件日志";
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            color: Theme.muted-fg;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text {
+                                            text: Logic.monitoring ? "监控中" : "已停止";
+                                            font-size: 12px;
+                                            color: Logic.monitoring ? Theme.success : Theme.muted-fg;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                Rectangle { height: 1px; background: Theme.border; }
+                                ListView {
+                                    for row in Logic.events: Rectangle {
+                                        height: 30px;
+                                        background: Theme.card-bg;
+                                        HorizontalLayout {
+                                            padding-left: 14px;
+                                            padding-right: 14px;
+                                            spacing: 10px;
+                                            Text { text: row.time; width: Cols.event-time; font-size: 12px; color: Theme.muted-fg; vertical-alignment: center; }
+                                            Dot {
+                                                size: 7px;
+                                                y: (parent.height - 7px) / 2;
+                                                background: row.kind == 0 ? Theme.success : row.kind == 1 ? Theme.warning : Theme.info;
+                                            }
+                                            Text { text: row.course; width: Cols.event-course; font-size: 12px; color: Theme.muted-fg; overflow: elide; vertical-alignment: center; }
+                                            Text {
+                                                text: row.text;
+                                                font-size: 12px;
+                                                color: Theme.fg;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                    // 活动表
-                    Rectangle {
-                        height: 200px;
-                        background: Theme.card-bg;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: 12px;
-                        VerticalLayout {
-                            spacing: 0;
-                            Rectangle {
-                                height: 34px;
-                                background: Theme.secondary-bg;
-                                border-radius: 12px;
-                                HorizontalLayout {
-                                    padding-left: 14px;
-                                    padding-right: 14px;
-                                    alignment: center;
-                                    Text { text: "课程"; width: parent.width * 0.30; font-size: 13px; font-weight: 600; color: Theme.muted-fg; }
-                                    Text { text: "类型"; width: parent.width * 0.16; font-size: 13px; font-weight: 600; color: Theme.muted-fg; }
-                                    Text { text: "时间"; width: parent.width * 0.16; font-size: 13px; font-weight: 600; color: Theme.muted-fg; }
-                                    Text { text: "状态"; font-size: 13px; font-weight: 600; color: Theme.muted-fg; }
-                                }
+                }
+                if Logic.active-page == 1: Rectangle {
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "课程";
+                                font-size: 17px;
+                                font-weight: 700;
+                                color: Theme.fg;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
                             }
-                            Rectangle { height: 1px; background: Theme.border; }
-                            if Logic.activities.length == 0: Text {
-                                text: "暂无活动,监控开启后自动检测签到";
+                            Text {
+                                text: "共 " + Logic.courses-count + " 门";
+                                font-size: 13px;
+                                color: Theme.muted-fg;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: Theme.card-bg;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            border-radius: 12px;
+                            clip: true;
+                            if Logic.courses.length == 0: Text {
+                                text: "暂无课程,登录后自动获取";
                                 color: Theme.muted-fg;
                                 font-size: 13px;
                                 vertical-alignment: center;
                                 horizontal-alignment: center;
                             }
                             ListView {
-                                for row in Logic.activities: Rectangle {
-                                    height: 34px;
+                                for row in Logic.courses: Rectangle {
+                                    height: 40px;
                                     background: Theme.card-bg;
                                     HorizontalLayout {
-                                        padding-left: 14px;
-                                        padding-right: 14px;
-                                        alignment: center;
-                                        Text { text: row.course; width: parent.width * 0.30; font-size: 13px; color: Theme.fg; overflow: elide; vertical-alignment: center; }
-                                        Text { text: row.kind; width: parent.width * 0.16; font-size: 13px; color: Theme.fg; vertical-alignment: center; }
-                                        Text { text: row.time; width: parent.width * 0.16; font-size: 13px; color: Theme.muted-fg; vertical-alignment: center; }
+                                        padding-left: 16px;
+                                        padding-right: 16px;
+                                        spacing: 12px;
+                                        Dot {
+                                            size: 6px;
+                                            y: (parent.height - 6px) / 2;
+                                            background: Theme.info;
+                                        }
                                         Text {
-                                            text: row.status == 0 ? "检测中" : row.status == 1 ? "已签" : row.status == 3 ? "已结束" : ("失败: " + row.detail);
-                                            font-size: 13px;
-                                            color: row.status == 0 ? Theme.info : row.status == 1 ? Theme.success : row.status == 3 ? Theme.muted-fg : Theme.warning;
+                                            text: row.name;
+                                            font-size: 14px;
+                                            color: Theme.fg;
                                             overflow: elide;
                                             vertical-alignment: center;
                                         }
@@ -353,183 +600,67 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
-                    // 事件日志
-                    Rectangle {
-                        vertical-stretch: 1;
-                        background: Theme.card-bg;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: 12px;
-                        clip: true;
-                        VerticalLayout {
-                            spacing: 0;
+                }
+                if Logic.active-page == 2: Rectangle {
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
                             Rectangle {
-                                height: 34px;
-                                background: Theme.secondary-bg;
-                                HorizontalLayout {
-                                    padding-left: 14px;
-                                    padding-right: 14px;
-                                    Text {
-                                        text: "事件日志";
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                        color: Theme.muted-fg;
-                                        vertical-alignment: center;
-                                    }
-                                    Rectangle {}
-                                    Text {
-                                        text: Logic.monitoring ? "监控中" : "已停止";
-                                        font-size: 12px;
-                                        color: Logic.monitoring ? Theme.success : Theme.muted-fg;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                            Rectangle { height: 1px; background: Theme.border; }
-                            ListView {
-                                for row in Logic.events: Rectangle {
-                                    height: 28px;
-                                    background: Theme.card-bg;
-                                    HorizontalLayout {
-                                        padding-left: 14px;
-                                        padding-right: 14px;
-                                        spacing: 10px;
-                                        Text { text: row.time; width: 62px; font-size: 12px; color: Theme.muted-fg; vertical-alignment: center; }
-                                        Rectangle {
-                                            width: 8px;
-                                            y: (parent.height - 8px) / 2;
-                                            border-radius: 4px;
-                                            background: row.kind == 0 ? Theme.success : row.kind == 1 ? Theme.warning : Theme.info;
-                                        }
-                                        Text { text: row.course; width: 70px; font-size: 12px; color: Theme.muted-fg; overflow: elide; vertical-alignment: center; }
-                                        Text { text: row.text; font-size: 12px; color: Theme.fg; overflow: elide; vertical-alignment: center; }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if Logic.active-page == 1: Rectangle {
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "课程";
-                            font-size: 17px;
-                            font-weight: 700;
-                            color: Theme.fg;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "共 " + Logic.courses-count + " 门";
-                            font-size: 13px;
-                            color: Theme.muted-fg;
-                            vertical-alignment: center;
-                        }
-                    }
-                    Rectangle {
-                        vertical-stretch: 1;
-                        background: Theme.card-bg;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        border-radius: 12px;
-                        clip: true;
-                        if Logic.courses.length == 0: Text {
-                            text: "暂无课程,登录后自动获取";
-                            color: Theme.muted-fg;
-                            font-size: 13px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                        }
-                        ListView {
-                            for row in Logic.courses: Rectangle {
-                                height: 40px;
+                                horizontal-stretch: 1;
+                                height: 84px;
                                 background: Theme.card-bg;
-                                HorizontalLayout {
-                                    padding-left: 16px;
-                                    padding-right: 16px;
-                                    spacing: 12px;
-                                    Rectangle {
-                                        width: 6px;
-                                        y: (parent.height - 6px) / 2;
-                                        border-radius: 3px;
-                                        background: Theme.info;
-                                    }
-                                    Text {
-                                        text: row.name;
-                                        font-size: 14px;
-                                        color: Theme.fg;
-                                        overflow: elide;
-                                        vertical-alignment: center;
-                                    }
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 12px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    alignment: center;
+                                    Text { text: Logic.found-count; font-size: 26px; font-weight: 700; color: Theme.fg; horizontal-alignment: center; }
+                                    Text { text: "发现活动"; font-size: 13px; color: Theme.muted-fg; horizontal-alignment: center; }
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 84px;
+                                background: Theme.card-bg;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 12px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    alignment: center;
+                                    Text { text: Logic.signed-count; font-size: 26px; font-weight: 700; color: Theme.success; horizontal-alignment: center; }
+                                    Text { text: "成功签到"; font-size: 13px; color: Theme.muted-fg; horizontal-alignment: center; }
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 84px;
+                                background: Theme.card-bg;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                border-radius: 12px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    alignment: center;
+                                    Text { text: Logic.courses-count; font-size: 26px; font-weight: 700; color: Theme.info; horizontal-alignment: center; }
+                                    Text { text: "监控课程"; font-size: 13px; color: Theme.muted-fg; horizontal-alignment: center; }
                                 }
                             }
                         }
-                    }
-                }
-            }
-            if Logic.active-page == 2: Rectangle {
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 12px;
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 84px;
-                            background: Theme.card-bg;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            border-radius: 12px;
-                            VerticalLayout {
-                                padding: 12px;
-                                alignment: center;
-                                Text { text: Logic.found-count; font-size: 26px; font-weight: 700; color: Theme.fg; horizontal-alignment: center; }
-                                Text { text: "发现活动"; font-size: 13px; color: Theme.muted-fg; horizontal-alignment: center; }
-                            }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            height: 280px;
+                            StatCard { title: "事件类型分布"; rows: Logic.kind-stats; horizontal-stretch: 1; }
+                            StatCard { title: "事件结果"; rows: Logic.result-stats; horizontal-stretch: 1; }
                         }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 84px;
-                            background: Theme.card-bg;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            border-radius: 12px;
-                            VerticalLayout {
-                                padding: 12px;
-                                alignment: center;
-                                Text { text: Logic.signed-count; font-size: 26px; font-weight: 700; color: Theme.success; horizontal-alignment: center; }
-                                Text { text: "成功签到"; font-size: 13px; color: Theme.muted-fg; horizontal-alignment: center; }
-                            }
+                        StatCard {
+                            title: "各课程事件数";
+                            rows: Logic.course-stats;
+                            vertical-stretch: 1;
                         }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 84px;
-                            background: Theme.card-bg;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            border-radius: 12px;
-                            VerticalLayout {
-                                padding: 12px;
-                                alignment: center;
-                                Text { text: Logic.courses-count; font-size: 26px; font-weight: 700; color: Theme.info; horizontal-alignment: center; }
-                                Text { text: "监控课程"; font-size: 13px; color: Theme.muted-fg; horizontal-alignment: center; }
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        height: 300px;
-                        StatCard { title: "事件类型分布"; rows: Logic.kind-stats; horizontal-stretch: 1; }
-                        StatCard { title: "事件结果"; rows: Logic.result-stats; horizontal-stretch: 1; }
-                    }
-                    StatCard {
-                        title: "各课程事件数";
-                        rows: Logic.course-stats;
-                        vertical-stretch: 1;
                     }
                 }
             }
@@ -544,7 +675,7 @@ export component MainWindow inherits Window {
         }
         Rectangle {
             width: 440px;
-            height: 260px;
+            height: 252px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             background: Theme.card-bg;
@@ -561,14 +692,13 @@ export component MainWindow inherits Window {
                     color: Theme.muted-fg;
                     wrap: word-wrap;
                 }
-                // 授权链接 + 复制
                 Rectangle {
                     height: 34px;
                     background: Theme.secondary-bg;
                     border-radius: 6px;
                     HorizontalLayout {
                         padding-left: 10px;
-                        padding-right: 6px;
+                        padding-right: 4px;
                         spacing: 8px;
                         Text {
                             text: "https://open.weixin.qq.com/connect/oauth2/authorize?appid=wx1b5650884f657981…";
@@ -578,8 +708,11 @@ export component MainWindow inherits Window {
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                         }
-                        Button {
-                            text: "复制";
+                        WButton {
+                            label: "复制";
+                            width: 52px;
+                            height-w: 26px;
+                            font-size-w: 12px;
                             clicked => { Logic.copy-auth-link(); }
                         }
                     }
@@ -591,13 +724,15 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 8px;
                     Rectangle {}
-                    Button {
-                        text: "取消";
+                    WButton {
+                        label: "取消";
+                        width: 76px;
                         clicked => { Logic.login-cancel(); }
                     }
-                    Button {
-                        text: "登录";
+                    WButton {
+                        label: "登录";
                         primary: true;
+                        width: 76px;
                         clicked => { Logic.login-submit(); }
                     }
                 }

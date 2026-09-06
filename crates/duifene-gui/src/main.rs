@@ -2,6 +2,8 @@
 
 slint::include_modules!();
 
+use slint::winit_030::WinitWindowAccessor;
+
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -519,7 +521,53 @@ fn main() {
 
     {
         let weak = app_weak.clone();
-        logic.on_nav(move |page| {
+        // 无框窗口:系统级拖动 + 双击最大化 + 最小化/最大化/关闭
+    {
+        use std::cell::Cell;
+        let weak = app_weak.clone();
+        let last_press: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+        logic.on_titlebar_press(move || {
+            let Some(app) = weak.upgrade() else { return };
+            let now = Instant::now();
+            let double_click = matches!(last_press.get(), Some(t) if now.duration_since(t) < Duration::from_millis(400));
+            last_press.set(Some(now));
+            if double_click {
+                let maximized = app.window().is_maximized();
+                app.window().set_maximized(!maximized);
+            } else {
+                app.window().with_winit_window(|w| {
+                    let _ = w.drag_window();
+                });
+            }
+        });
+    }
+    {
+        let weak = app_weak.clone();
+        logic.on_win_minimize(move || {
+            if let Some(app) = weak.upgrade() {
+                app.window().set_minimized(true);
+            }
+        });
+    }
+    {
+        let weak = app_weak.clone();
+        logic.on_win_maximize(move || {
+            if let Some(app) = weak.upgrade() {
+                let maximized = app.window().is_maximized();
+                app.window().set_maximized(!maximized);
+            }
+        });
+    }
+    {
+        let weak = app_weak.clone();
+        logic.on_win_close(move || {
+            if let Some(app) = weak.upgrade() {
+                let _ = app.window().hide();
+            }
+        });
+    }
+
+    logic.on_nav(move |page| {
             if let Some(app) = weak.upgrade() {
                 app.global::<Logic>().set_active_page(page);
             }
