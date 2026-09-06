@@ -76,7 +76,40 @@ fn embed_windows_icon() {
         bytes.len(),
         ids
     );
-    println!("cargo:rustc-link-arg-bins={}", res_path.display());
+    // 用静态库方式链接资源: 把 .res 打包成 resource.lib,
+    // 再用 rustc-link-search + rustc-link-lib=static=resource。
+    // 这借鉴 tauri-build 的成熟做法(它也是生成 .lib 后 static link),
+    // 与「把 .res 直接当 link-arg 传给 rustc」不同, 后者在这套环境下
+    // 不会真正把资源送进 exe(无论 LTO 开关)。
+    let lib_path = std::path::Path::new(&out_dir).join("resource.lib");
+    let lib_cmd = ["llvm-lib", "lib.exe"];
+    let mut built = false;
+    for tool in lib_cmd {
+        let o = Command::new(tool)
+            .arg(("/OUT:").to_string() + &lib_path.display().to_string())
+            .arg(&res_path)
+            .output();
+        if let Ok(o) = o {
+            if o.status.success() {
+                println!(
+                    "cargo:warning=lib tool={} produced resource.lib",
+                    tool
+                );
+                built = true;
+                break;
+            }
+        }
+    }
+    if !built {
+        // 回退: 直接指定 .res 为链接对象(某些链接器支持)
+        println!(
+            "cargo:warning=no llvm-lib/lib.exe; falling back to link-arg .res"
+        );
+        println!("cargo:rustc-link-arg-bins={}", res_path.display());
+    } else {
+        println!("cargo:rustc-link-search=native={}", out_dir);
+        println!("cargo:rustc-link-lib=static=resource");
+    }
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=app.rc");
 }

@@ -20,6 +20,6 @@ slint = { version = "1", default-features = false,
                       "unstable-winit-030"] }
 
 [profile.release]
-lto = "off"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
