@@ -107,8 +107,10 @@ fn embed_windows_icon() {
         );
         println!("cargo:rustc-link-arg-bins={}", res_path.display());
     } else {
+        // 用 whole-archive 强制把整个 resource.lib 链入。否则静态库里的
+        // 资源对象因无被引用符号而会被链接器丢弃,导致 exe 没有 .rsrc 段。
         println!("cargo:rustc-link-search=native={}", out_dir);
-        println!("cargo:rustc-link-lib=static=resource");
+        println!("cargo:rustc-link-lib=static:+whole-archive=resource");
     }
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=app.rc");
