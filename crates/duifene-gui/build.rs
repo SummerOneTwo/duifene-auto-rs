@@ -82,7 +82,9 @@ fn embed_windows_icon() {
     // 与「把 .res 直接当 link-arg 传给 rustc」不同, 后者在这套环境下
     // 不会真正把资源送进 exe(无论 LTO 开关)。
     let lib_path = std::path::Path::new(&out_dir).join("resource.lib");
-    let lib_cmd = ["llvm-lib", "lib.exe"];
+    // 微软 lib.exe(随 VS 提供,稳定)优先; llvm-lib 产出的 lib 曾触发
+    // link.exe LNK1106(cannot seek),可能是它的 archive 格式问题。
+    let lib_cmd = ["lib.exe", "llvm-lib"];
     let mut built = false;
     for tool in lib_cmd {
         let o = Command::new(tool)
@@ -103,7 +105,7 @@ fn embed_windows_icon() {
     if !built {
         // 回退: 直接指定 .res 为链接对象(某些链接器支持)
         println!(
-            "cargo:warning=no llvm-lib/lib.exe; falling back to link-arg .res"
+            "cargo:warning=no lib.exe/llvm-lib; falling back to link-arg .res"
         );
         println!("cargo:rustc-link-arg-bins={}", res_path.display());
     } else {
