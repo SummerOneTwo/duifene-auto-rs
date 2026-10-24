@@ -14,11 +14,9 @@ use chrono::Local;
 
 use duifene_core::api::{CheckInResult, Client as _};
 use duifene_core::engine::{Engine, EngineConfig, Event as CoreEvent};
-use duifene_core::live::LiveClient;
+use duifene_core::live::{LiveClient, WECHAT_AUTH_URL};
 use duifene_core::runner::Runner;
 use duifene_core::{models as core_models, storage};
-
-const WECHAT_AUTH_URL: &str = "https://open.weixin.qq.com/connect/oauth2/authorize?appid=wx1b5650884f657981&redirect_uri=https://www.duifene.com/_FileManage/PdfView.aspx?file=https%3A%2F%2Ffs.duifene.com%2Fres%2Fr2%2Fu6106199%2F%E5%AF%B9%E5%88%86%E6%98%93%E7%99%BB%E5%BD%95_876c9d439ca68ead389c.pdf&response_type=code&scope=snsapi_userinfo&connect_redirect=1#wechat_redirect";
 
 const MAX_EVENTS: usize = 200;
 const MAX_ACTIVITIES: usize = 10;
@@ -276,11 +274,15 @@ fn spawn_monitor(tx: mpsc::Sender<GuiMessage>, flag: Arc<AtomicBool>) {
             EngineConfig {
                 delay_seconds: 0,
                 coords: storage::course_coordinates(&config),
-                refresh_every: 300,
+                // 课程列表同步周期;签到活动发现是每 tick 一次,由下方 Runner 节拍决定
+                refresh_every: 60,
                 signed_percent: config.signed_percent,
+                signed_percent_by_course: config.signed_percent_overrides.into_iter().collect(),
+                watched_names: Vec::new(),
             },
         );
-        let mut runner = Runner::new(engine, Duration::from_secs(2));
+        // 监听期间 1 秒高频轮询:数字/汉字签到的补码窗口只有几秒,节拍必须跟上
+        let mut runner = Runner::new(engine, Duration::from_secs(1));
         runner.run_with_stop(
             &mut |event| {
                 let _ = tx.send(GuiMessage::Core(event));
