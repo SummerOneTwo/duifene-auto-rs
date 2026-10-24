@@ -268,7 +268,7 @@ fn spawn_monitor(tx: mpsc::Sender<GuiMessage>, flag: Arc<AtomicBool>) {
             return;
         }
         let _ = tx.send(GuiMessage::Courses(courses.clone()));
-        let engine = Engine::new(
+        let engine = Engine::with_handled(
             Box::new(client),
             courses,
             EngineConfig {
@@ -280,6 +280,8 @@ fn spawn_monitor(tx: mpsc::Sender<GuiMessage>, flag: Arc<AtomicBool>) {
                 signed_percent_by_course: config.signed_percent_overrides.into_iter().collect(),
                 watched_names: Vec::new(),
             },
+            // 重启后不再重新发现/重复处理已完结的活动
+            storage::handled_activities(),
         );
         // 监听期间 1 秒高频轮询:数字/汉字签到的补码窗口只有几秒,节拍必须跟上
         let mut runner = Runner::new(engine, Duration::from_secs(1));
@@ -378,6 +380,10 @@ fn apply_message(
                     CheckInResult::Gone(message) => (ActivityStatus::Gone, message),
                     CheckInResult::Failed(message) => (ActivityStatus::Failed, message),
                 };
+                // 终态(成功/已结束)落盘,与 daemon 共用同一份已处理列表
+                if let ActivityStatus::Success | ActivityStatus::Gone = status {
+                    storage::add_handled_activity(&activity_id);
+                }
                 let mut state = shared.state.lock().unwrap();
                 if let Some(row) = state.activities.iter_mut().find(|row| row.id == activity_id) {
                     row.status = status;
