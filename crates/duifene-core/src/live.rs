@@ -15,6 +15,9 @@ type HttpClient = Agent;
 type Response = ureq::http::Response<Body>;
 
 const HOST: &str = "https://www.duifene.com";
+/// 微信 OAuth 授权链接:手机/电脑微信中打开并完成授权,把跳转后带 code= 的
+/// 完整链接作为 `dfe login <链接>` 的参数完成登录。
+pub const WECHAT_AUTH_URL: &str = "https://open.weixin.qq.com/connect/oauth2/authorize?appid=wx1b5650884f657981&redirect_uri=https://www.duifene.com/_FileManage/PdfView.aspx?file=https%3A%2F%2Ffs.duifene.com%2Fres%2Fr2%2Fu6106199%2F%E5%AF%B9%E5%88%86%E6%98%93%E7%99%BB%E5%BD%95_876c9d439ca68ead389c.pdf&response_type=code&scope=snsapi_userinfo&connect_redirect=1#wechat_redirect";
 const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0";
 const MOBILE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.40(0x1800282a) NetType/WIFI Language/zh_CN";
 const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded; charset=UTF-8";
@@ -299,6 +302,48 @@ fn page_coordinates(html: &str) -> Option<(f64, f64)> {
     }
 }
 
+/// 从考勤列表接口(gettclasscheckinlistbypage)的返回中按活动 ID 匹配签到码。
+/// 数字签到为 4 位数字,汉字签到为 4 个汉字;二维码/定位行 CheckInCode 为空。
+/// 注意:实测该接口只收录已结束的签到,进行中的码拿不到,仅作兜底。
+fn code_from_checkin_list(json: &serde_json::Value, activity_id: &str) -> Option<String> {
+    let rows = json.get("rows")?.as_array()?;
+    for row in rows {
+        let row_id = match row.get("ID") {
+            Some(serde_json::Value::String(text)) => text.clone(),
+            Some(serde_json::Value::Number(number)) => number.to_string(),
+            _ => String::new(),
+        };
+        if row_id != activity_id {
+            continue;
+        }
+        let code = row
+            .get("CheckInCode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if code.chars().count() == 4 {
+            return Some(code);
+        }
+        return None;
+    }
+    None
+}
+
+/// 表单值的百分号编码:汉字签到码需按 UTF-8 百分号编码提交;数字不受影响。
+fn form_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 fn round_to_8(value: f64) -> f64 {
     (value * 1e8).round() / 1e8
 }
@@ -462,8 +507,22 @@ fn classify_message(message: &str, failure_prefix: &str) -> CheckInResult {
     if message.contains("成功") {
         return CheckInResult::Ok(message.to_string());
     }
-    if message.contains("已结束") || message.contains("没有正在") {
-        return CheckInResult::Gone(message.to_string());
+    // 活动已不可签的各类表述统一归为 Gone:不触发失败邮件、不再重试
+    for marker in [
+        "已结束",
+        "没有正在",
+        "已过期",
+        "已失效",
+        "已关闭",
+        "未开始",
+        "非签到时间",
+        "不在签到时间",
+        "不能进行",
+        "不在签",
+    ] {
+        if message.contains(marker) {
+            return CheckInResult::Gone(message.to_string());
+        }
     }
     CheckInResult::Failed(format!("{failure_prefix}: {message}"))
 }
@@ -489,6 +548,133 @@ fn classify_sign_json(response: Response, failure_prefix: &str) -> CheckInResult
 fn first_text_snippet(html: &str) -> String {
     let collapsed = html.split_whitespace().collect::<Vec<&str>>().join(" ");
     collapsed.chars().take(60).collect()
+}
+
+/// 剔除 HTML 里的 <script>…</script> 与 <style>…</style> 内容(大小写不敏感)。
+fn strip_script_and_style(html: &str) -> String {
+    let lower = html.to_lowercase();
+    let mut removed: Vec<(usize, usize)> = Vec::new();
+    for (open_marker, close_marker) in [
+        ("<script", "</script>"),
+        ("<style", "</style>"),
+    ] {
+        let mut search_from = 0;
+        while let Some(relative) = lower[search_from..].find(open_marker) {
+            let open = search_from + relative;
+            let Some(close_relative) = lower[open..].find(close_marker) else {
+                break;
+            };
+            let close = open + close_relative + close_marker.len();
+            removed.push((open, close));
+            search_from = close;
+        }
+    }
+    if removed.is_empty() {
+        return html.to_string();
+    }
+    removed.sort_unstable();
+    let mut output = String::with_capacity(html.len());
+    let mut cursor = 0;
+    for (start, end) in removed {
+        if start > cursor {
+            output.push_str(&html[cursor..start]);
+        }
+        output.push(' ');
+        cursor = end.max(cursor);
+    }
+    output.push_str(&html[cursor..]);
+    output
+}
+
+/// 从失败/提示页 HTML 里提取可读文案,依次尝试:脚本里的提示文案 → <title> → 去标签后的正文。
+/// 提取不到则返回 None,由调用方给出兜底描述。避免把整页 HTML 塞进错误信息/邮件。
+fn readable_page_message(html: &str) -> Option<String> {
+    // 1) 常见提示载体:alert("…") / layer.msg('…')
+    for marker in ["alert(", "layer.msg(", "layermsg("] {
+        let Some(marker_pos) = html.find(marker) else {
+            continue;
+        };
+        let start = marker_pos + marker.len();
+        let rest = &html[start..];
+        let Some(quote) = rest.chars().next() else {
+            continue;
+        };
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let after_quote = &rest[1..];
+        let Some(close) = after_quote.find(quote) else {
+            continue;
+        };
+        let content = after_quote[..close].trim();
+        if !content.is_empty() {
+            return Some(content.to_string());
+        }
+    }
+    // 2) <title> 内容
+    let html = strip_script_and_style(html);
+    if let Some(start) = html.find("<title") {
+        if let Some(open) = html[start..].find('>') {
+            let body_start = start + open + 1;
+            let tail = &html[body_start..];
+            if let Some(close) = tail.find("</title>") {
+                let title = tail[..close].trim();
+                let is_boilerplate = matches!(
+                    title,
+                    "提示" | "消息" | "系统提示" | "系统消息" | "操作提示"
+                        | "学生签到" | "课程签到" | "签到"
+                );
+                if !title.is_empty() && !is_boilerplate {
+                    return Some(title.to_string());
+                }
+            }
+        }
+    }
+    // 3) 剔除 <script>/<style> 后,再去标签取正文
+    let mut text = String::new();
+    let mut in_tag = false;
+    for character in html.chars() {
+        if character == '<' {
+            in_tag = true;
+        } else if character == '>' && in_tag {
+            in_tag = false;
+        } else if !in_tag {
+            if character.is_whitespace() {
+                text.push(' ');
+            } else {
+                text.push(character);
+            }
+        }
+    }
+    for boilerplate in ["首页", "登录", "注册", "关于我们", "进入对分易", "学生签到", "课程签到"] {
+        text = text.replace(boilerplate, " ");
+    }
+    // 优先返回含"异常语义"关键词的短句,避免截到导航/标题文字
+    let collapsed: Vec<&str> = text.split_whitespace().collect();
+    let sentence = collapsed.join(" ");
+    let hint_keywords = [
+        "错误", "失败", "过期", "频繁", "范围", "距离", "请稍后", "无法",
+        "不能", "重复", "未签到", "未成功", "不正确", "不存在", "已使用",
+    ];
+    let segments: Vec<&str> = sentence
+        .split(|c: char| c == '。' || c == '！' || c == ';' || c == '；')
+        .collect();
+    if let Some(hit) = segments
+        .iter()
+        .map(|segment| segment.trim())
+        .find(|segment| hint_keywords.iter().any(|keyword| segment.contains(keyword)))
+    {
+        let hit: String = hit.chars().take(80).collect();
+        if hit.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+            return Some(hit);
+        }
+    }
+    let sentence: String = sentence.chars().take(80).collect();
+    let has_cjk = sentence.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+    if has_cjk && sentence.len() > 2 {
+        return Some(sentence);
+    }
+    None
 }
 
 fn parse_courses(items: &[serde_json::Value]) -> Vec<Course> {
@@ -575,6 +761,7 @@ pub struct LiveClient {
     uid: Option<String>,
     discovered: HashSet<String>,
     learned_center: Option<(f64, f64)>,
+    last_saved_cookie: Option<String>,
 }
 
 impl LiveClient {
@@ -599,6 +786,7 @@ impl LiveClient {
             uid: None,
             discovered: HashSet::new(),
             learned_center: crate::storage::load_learned_center(),
+            last_saved_cookie: None,
         }
     }
 
@@ -610,6 +798,18 @@ impl LiveClient {
 
     pub fn cookie_string(&self) -> String {
         self.cookies.snapshot()
+    }
+
+    /// 会话 cookie 有变化时写回配置,供服务端滑动续期后的心跳持久化;
+    /// cookie 未变化时不触发磁盘写入。
+    pub fn persist_session_if_changed(&mut self) {
+        let current = self.cookies.snapshot();
+        if current.is_empty() || self.last_saved_cookie.as_deref() == Some(current.as_str()) {
+            return;
+        }
+        if crate::storage::save_cookie(&current).is_ok() {
+            self.last_saved_cookie = Some(current);
+        }
     }
 
     fn get(&self, path: &str) -> Result<Response, ApiErr> {
@@ -768,6 +968,42 @@ impl LiveClient {
             Err(ApiErr::Msg("进入课程页面失败".to_string()))
         }
     }
+
+    /// 平台升级后学生签到日志接口不再返回 CheckInCode,进行中的签到码也不在
+    /// 任何学生会话可读的接口上;唯一来源是教师端考勤列表接口
+    /// (gettclasscheckinlistbypage)——它在签到**结束**的瞬间把行连同
+    /// CheckInCode 收录进列表,而服务端对结束后数秒内提交的码仍记出勤
+    /// (实测结束+4 秒补签成功;约 5 分钟后则判已过期)。因此策略是:
+    /// 发现活动后以 3 秒短周期轮询该接口,按活动 ID 精确匹配行,一拿到码
+    /// 立即提交。数字码与汉字码共用此路径。
+    fn fetch_check_code(&self, activity: &SignActivity, course: &Course) -> Option<String> {
+        let data = format!(
+            "action=gettclasscheckinlistbypage&classid={}&page=1&nums=10",
+            course.tclass_id
+        );
+        let response = self
+            .post_with_headers(
+                "/_CheckIn/MBCount.ashx",
+                data,
+                "/_CheckIn/MB/TeachCheckInList.aspx",
+                &[
+                    ("X-Requested-With", "XMLHttpRequest"),
+                    ("Origin", HOST),
+                    ("Accept", "application/json, text/javascript, */*; q=0.01"),
+                ],
+            )
+            .ok()?;
+        let json = parse_json(response).ok()?;
+        let code = code_from_checkin_list(&json, &activity.id);
+        if std::env::var_os("DUIFENE_DEBUG").is_some() {
+            eprintln!(
+                "[debug] checkin code for {}: {:?}",
+                activity.id,
+                code.as_deref().unwrap_or("<无>")
+            );
+        }
+        code
+    }
 }
 
 impl Default for LiveClient {
@@ -788,7 +1024,9 @@ fn extract_wechat_code(link: &str) -> Option<String> {
 
 impl Client for LiveClient {
     fn check_login(&mut self) -> Result<(), ApiErr> {
-        self.verify_session("登录已失效")
+        self.verify_session("登录已失效")?;
+        self.persist_session_if_changed();
+        Ok(())
     }
 
     fn fetch_courses(&mut self) -> Result<Vec<Course>, ApiErr> {
@@ -951,20 +1189,32 @@ impl Client for LiveClient {
         let mut located_indexes: Vec<(usize, (f64, f64))> = Vec::new();
         for (request_index, request) in requests.iter().enumerate() {
             let action = match request.activity.r#type {
-                SignType::Code => match &request.activity.code {
-                    Some(code) => Some(SignAction::Post {
-                        path: "/_CheckIn/CheckIn.ashx",
-                        data: format!(
-                            "action=studentcheckin&studentid={uid_string}&checkincode={code}"
-                        ),
-                        mobile_ua: false,
-                    }),
-                    None => {
-                        pre_results.push(Some(CheckInResult::Failed("未获取到签到码".to_string())));
-                        actions.push(None);
-                        continue;
+                // 数字码与汉字码共用同一提交接口;升级后日志行不再携带签到码,
+                // 缺码时从教师投屏页现取(见 fetch_check_code)
+                SignType::Code | SignType::Hanzi => {
+                    let code = request
+                        .activity
+                        .code
+                        .clone()
+                        .or_else(|| self.fetch_check_code(&request.activity, &request.course));
+                    match code {
+                        Some(code) => Some(SignAction::Post {
+                            path: "/_CheckIn/CheckIn.ashx",
+                            data: format!(
+                                "action=studentcheckin&studentid={uid_string}&checkincode={}",
+                                form_encode(&code)
+                            ),
+                            mobile_ua: false,
+                        }),
+                        None => {
+                            pre_results.push(Some(CheckInResult::Failed(
+                                "签到页未取到签到码,等待下轮重试".to_string(),
+                            )));
+                            actions.push(None);
+                            continue;
+                        }
                     }
-                },
+                }
                 SignType::Qr => Some(SignAction::Get {
                     path: format!(
                         "/_CheckIn/MB/QrCodeCheckOK.aspx?state={}",
@@ -1069,9 +1319,10 @@ impl Client for LiveClient {
                                             "非微信链接登录,无法二维码签到".to_string(),
                                         )
                                     } else {
+                                        let detail = readable_page_message(&html)
+                                            .unwrap_or_else(|| "返回页面无有效提示".to_string());
                                         CheckInResult::Failed(format!(
-                                            "二维码签到未成功: {}",
-                                            first_text_snippet(&html)
+                                            "二维码签到未成功: {detail}"
                                         ))
                                     }
                                 }
@@ -1118,21 +1369,39 @@ impl Client for LiveClient {
             ],
         )?;
         let json = parse_json(response)?;
-        // 该接口以数组形式返回多个课程的人数,取匹配 ciid 的一项;失败按"未知"放行
-        let array = json.as_array().ok_or_else(|| {
-            ApiErr::Parse("签到人数接口返回非数组".to_string())
-        })?;
+        parse_arrival_count(&json)
+    }
+}
+
+/// 解析人数接口返回,两种形态都兼容:
+/// - 对象 {"OutNumber":…,"AbsenceNumber":…,"TotalNumber":…}(线上当前形态)
+/// - 数组 [{…}, …](多课程形态,取第一项)
+/// 历史上只认数组,而线上返回对象,导致解析必然失败、触发引擎的"出错即放行",
+/// 签到门槛因此从未生效。已签人数优先取 OutNumber,缺失时用 总人数-缺勤 推算。
+fn parse_arrival_count(json: &serde_json::Value) -> Result<(u32, u32), ApiErr> {
+    let pick = |item: &serde_json::Value| -> Option<(u32, u32)> {
+        let total = item.get("TotalNumber").and_then(|v| v.as_u64())? as u32;
+        let signed = match item.get("OutNumber").and_then(|v| v.as_u64()) {
+            Some(out) => out as u32,
+            None => {
+                let absent = item.get("AbsenceNumber").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                total.saturating_sub(absent)
+            }
+        };
+        Some((signed, total))
+    };
+    if let Some(array) = json.as_array() {
         for item in array {
-            if let Some(total) = item.get("TotalNumber").and_then(|v| v.as_u64())
-                && let Some(absent) = item.get("AbsenceNumber").and_then(|v| v.as_u64())
-            {
-                let total = total as u32;
-                let signed = total.saturating_sub(absent as u32);
-                return Ok((signed, total));
+            if let Some(pair) = pick(item) {
+                return Ok(pair);
             }
         }
-        Err(ApiErr::Parse("签到人数接口无匹配数据".to_string()))
+        return Err(ApiErr::Parse("签到人数接口无匹配数据".to_string()));
     }
+    if let Some(pair) = pick(json) {
+        return Ok(pair);
+    }
+    Err(ApiErr::Parse("签到人数接口返回无法解析".to_string()))
 }
 
 #[cfg(test)]
@@ -1176,6 +1445,39 @@ mod tests {
     }
 
     #[test]
+    fn arrival_count_object_form_parsed() {
+        // 线上真实形态:对象,已签取 OutNumber
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"OutNumber":11,"AbsenceNumber":34,"LateNumber":0,"LeaveNumber":0,"TotalNumber":45}"#)
+                .unwrap();
+        assert_eq!(parse_arrival_count(&json).unwrap(), (11, 45));
+    }
+
+    #[test]
+    fn arrival_count_array_form_parsed() {
+        // 兼容多课程数组形态:取第一项
+        let json: serde_json::Value = serde_json::from_str(
+            r#"[{"OutNumber":36,"AbsenceNumber":9,"TotalNumber":45},{"OutNumber":1,"AbsenceNumber":2,"TotalNumber":3}]"#,
+        )
+        .unwrap();
+        assert_eq!(parse_arrival_count(&json).unwrap(), (36, 45));
+    }
+
+    #[test]
+    fn arrival_count_falls_back_to_total_minus_absence() {
+        // 缺少 OutNumber 时用 总人数-缺勤 推算
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"AbsenceNumber":8,"TotalNumber":45}"#).unwrap();
+        assert_eq!(parse_arrival_count(&json).unwrap(), (37, 45));
+    }
+
+    #[test]
+    fn arrival_count_missing_total_is_error() {
+        let json: serde_json::Value = serde_json::from_str(r#"{"OutNumber":1}"#).unwrap();
+        assert!(parse_arrival_count(&json).is_err());
+    }
+
+    #[test]
     fn room_coordinates_parsed_from_page() {
         let html = r#"<input id="HFRoomLongitude" value="114.39437" />
                       <input id="hfroomlatitude" value="22.70462" />"#;
@@ -1200,6 +1502,68 @@ mod tests {
             classify_message("已超出签到范围", "签到未成功"),
             CheckInResult::Failed(_)
         ));
+    }
+
+    #[test]
+    fn expired_or_unopened_messages_are_gone() {
+        for message in [
+            "签到已过期,无法进行签到！2026-09-07 22:33:14",
+            "本次签到尚未开始",
+            "该签到已失效",
+            "非签到时间,不能签到",
+        ] {
+            assert!(
+                matches!(classify_message(message, "签到未成功"), CheckInResult::Gone(_)),
+                "应归为 Gone: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn readable_message_from_alert_and_title() {
+        let alert_page = r#"<html><body><script>alert("签到码输入错误");</script></body></html>"#;
+        assert_eq!(readable_page_message(alert_page).as_deref(), Some("签到码输入错误"));
+        let layer_page = r#"<script>layer.msg('请勿重复签到')</script>"#;
+        assert_eq!(readable_page_message(layer_page).as_deref(), Some("请勿重复签到"));
+        let title_page = r#"<html><head><title>系统提示</title></head><body><div>操作过于频繁,请稍后再试</div></body></html>"#;
+        let message = readable_page_message(title_page).unwrap_or_default();
+        assert!(message.contains("操作过于频繁"), "得到: {message}");
+    }
+
+    #[test]
+    fn readable_message_strips_inline_javascript() {
+        // 真实失败页:正文提示 + 一大段内嵌考勤统计 JS,不应把 JS 拼进原因
+        let page = r##"<html><head><title>学生签到</title></head><body>
+            <div>当前是“签到码”签到，请在公众号中“发送签到码”进行签到！</div>
+            <script>$(function () { //考勤统计
+                $("#StudentCount").click(function(){ $.post("/x.ashx"); });
+            });</script>
+            <a>学生签到</a><a>课程签到</a>
+        </body></html>"##;
+        let message = readable_page_message(page).unwrap_or_default();
+        assert!(
+            message.contains("发送签到码") && !message.contains("$("),
+            "得到: {message}"
+        );
+    }
+
+    #[test]
+    fn readable_message_skips_nav_text_for_real_hint() {
+        // 页面导航含"学生签到",但真实提示在正文里,应返回正文提示而非导航
+        let page = r#"<html><head><title>学生签到</title></head>
+            <body><a>学生签到</a><a>课程签到</a>
+            <div>签到失败:当前不在签到时间或已超过可签范围</div></body></html>"#;
+        let message = readable_page_message(page).unwrap_or_default();
+        assert!(message.contains("不在签到时间"), "得到: {message}");
+    }
+
+    #[test]
+    fn body_text_falls_back_to_first_sentence() {
+        let body_page = "<html>登录 注册 进入对分易 <div>不在教室范围,距离：343.08米！</div></html>";
+        let message = readable_page_message(body_page).unwrap_or_default();
+        assert!(message.contains("不在教室范围"), "得到: {message}");
+        // 无有效中文时返回 None
+        assert_eq!(readable_page_message("<html><body>ok</body></html>"), None);
     }
 
     #[test]
@@ -1321,5 +1685,55 @@ mod tests {
             compute_center_from(114.39437, 22.70462, 343.08, 350.48, 557.68);
         assert!((longitude - 114.39524833).abs() < 0.0001);
         assert!((latitude - 22.70166749).abs() < 0.0001);
+    }
+
+    #[test]
+    fn checkin_list_code_matched_by_activity_id() {
+        // 线上真实返回形态(gettclasscheckinlistbypage,课堂ID做了脱敏替换)
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"total":2,"rows":[
+                {"Row":"1","ID":"2546767","TClassID":"511556","CheckInCode":"6907","CheckInType":"1","IsDel":"0"},
+                {"Row":"2","ID":"2510144","TClassID":"511556","CheckInCode":"","CheckInType":"2","IsDel":"0"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            code_from_checkin_list(&json, "2546767").as_deref(),
+            Some("6907")
+        );
+        // 二维码行无码
+        assert_eq!(code_from_checkin_list(&json, "2510144"), None);
+        // 不存在的活动
+        assert_eq!(code_from_checkin_list(&json, "9999999"), None);
+    }
+
+    #[test]
+    fn checkin_list_accepts_numeric_id_and_hanzi_code() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"rows":[
+                {"ID":2546800,"CheckInCode":"火山木石","CheckInType":"4"},
+                {"ID":"2546801","CheckInCode":"abc","CheckInType":"1"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            code_from_checkin_list(&json, "2546800").as_deref(),
+            Some("火山木石")
+        );
+        // 非 4 字符的码(异常数据)不采用
+        assert_eq!(code_from_checkin_list(&json, "2546801"), None);
+    }
+
+    #[test]
+    fn checkin_list_without_rows_is_none() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"msg":0,"msgbox":"读取失败"}"#).unwrap();
+        assert_eq!(code_from_checkin_list(&json, "1"), None);
+    }
+
+    #[test]
+    fn form_encode_keeps_digits_and_encodes_hanzi() {
+        assert_eq!(form_encode("4681"), "4681");
+        assert_eq!(form_encode("火山木石"), "%E7%81%AB%E5%B1%B1%E6%9C%A8%E7%9F%B3");
     }
 }

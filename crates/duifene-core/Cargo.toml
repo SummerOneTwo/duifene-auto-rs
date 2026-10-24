@@ -11,3 +11,4 @@ thiserror = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
 ureq = { workspace = true }
+lettre = { workspace = true }

@@ -15,6 +15,8 @@ dirs = "6"
 rand = "0.9"
 ureq = { version = "3", default-features = false,
          features = ["native-tls", "gzip"] }
+lettre = { version = "0.11", default-features = false,
+           features = ["builder", "smtp-transport", "native-tls", "hostname"] }
 slint = { version = "1", default-features = false,
           features = ["std", "compat-1-2", "backend-winit", "renderer-software",
                       "unstable-winit-030"] }

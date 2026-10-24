@@ -12,6 +12,8 @@ pub enum SignType {
     Code,
     Qr,
     Locate,
+    /// 汉字签到(九宫格点选):升级新增,提交接口与数字码相同,码为 4 个汉字
+    Hanzi,
     Unknown,
 }
 
@@ -21,6 +23,7 @@ impl SignType {
             "1" => SignType::Code,
             "2" => SignType::Qr,
             "3" => SignType::Locate,
+            "4" => SignType::Hanzi,
             _ => SignType::Unknown,
         }
     }
@@ -104,6 +107,8 @@ mod tests {
         assert!(matches!(qr.r#type, SignType::Qr));
         let locate = SignActivity::from_raw(&raw(r#"{"ID":"3","CheckInType":"3"}"#));
         assert!(matches!(locate.r#type, SignType::Locate));
+        let hanzi = SignActivity::from_raw(&raw(r#"{"ID":"5","CheckInType":"4"}"#));
+        assert!(matches!(hanzi.r#type, SignType::Hanzi));
         let unknown = SignActivity::from_raw(&raw(r#"{"ID":"4","CheckInType":"9"}"#));
         assert!(matches!(unknown.r#type, SignType::Unknown));
     }
