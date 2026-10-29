@@ -1061,7 +1061,7 @@ checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
 
 [[package]]
 name = "duifene-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "duifene-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "chrono",
